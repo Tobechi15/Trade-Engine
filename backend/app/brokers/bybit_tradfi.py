@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import logging
+import time
+from collections.abc import Awaitable, Callable
+
+import httpx
+import websockets
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+from app.brokers.base import (
+    BrokerAccount,
+    BrokerInterface,
+    BrokerOrder,
+    BrokerPosition,
+    FillCallback,
+    OrderRequest,
+)
+from app.config import Settings
+
+logger = logging.getLogger("broker")
+
+# --------------------------------------------------------------------------
+# IMPORTANT: Bybit TradFi (tokenized US equities) is a newer product line.
+# This adapter implements Bybit's standard V5 request-signing scheme, which
+# is stable and well documented, and mirrors the V5 unified-trading request
+# shapes (category / symbol / side / orderType / qty ...). The exact
+# endpoint paths and the `category` value for TradFi equities should be
+# verified against the current Bybit TradFi API reference before live
+# trading - they are kept as class-level constants below so they are easy
+# to correct in one place without touching signing/retry/parsing logic.
+# --------------------------------------------------------------------------
+
+
+class BybitAPIError(RuntimeError):
+    def __init__(self, ret_code: int, ret_msg: str) -> None:
+        self.ret_code = ret_code
+        self.ret_msg = ret_msg
+        super().__init__(f"Bybit API error {ret_code}: {ret_msg}")
+
+
+class BybitTradFiBroker(BrokerInterface):
+    CATEGORY = "tradfi"  # TODO: confirm against current Bybit TradFi docs
+    ORDER_CREATE_PATH = "/v5/order/create"
+    ORDER_CANCEL_PATH = "/v5/order/cancel"
+    ORDER_AMEND_PATH = "/v5/order/amend"
+    OPEN_ORDERS_PATH = "/v5/order/realtime"
+    POSITIONS_PATH = "/v5/position/list"
+    WALLET_BALANCE_PATH = "/v5/account/wallet-balance"
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+        self._client = httpx.AsyncClient(base_url=settings.bybit_base_url, timeout=10.0)
+        self._connected = False
+        self._ws_task = None
+
+    @property
+    def is_connected(self) -> bool:
+        return self._connected
+
+    async def connect(self) -> None:
+        # Validate credentials with a lightweight authenticated call.
+        await self.get_account()
+        self._connected = True
+        logger.info("bybit_tradfi connected env=%s", self._settings.bybit_env)
+
+    async def disconnect(self) -> None:
+        self._connected = False
+        await self._client.aclose()
+
+    def _sign(self, timestamp: str, payload: str) -> str:
+        recv_window = str(self._settings.bybit_recv_window)
+        prehash = f"{timestamp}{self._settings.bybit_api_key}{recv_window}{payload}"
+        return hmac.new(
+            self._settings.bybit_api_secret.encode(), prehash.encode(), hashlib.sha256
+        ).hexdigest()
+
+    def _headers(self, timestamp: str, signature: str) -> dict[str, str]:
+        return {
+            "X-BAPI-API-KEY": self._settings.bybit_api_key,
+            "X-BAPI-TIMESTAMP": timestamp,
+            "X-BAPI-SIGN": signature,
+            "X-BAPI-RECV-WINDOW": str(self._settings.bybit_recv_window),
+            "Content-Type": "application/json",
+        }
+
+    @retry(
+        reraise=True,
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(httpx.TransportError),
+    )
+    async def _request(self, method: str, path: str, params: dict | None = None, body: dict | None = None) -> dict:
+        timestamp = str(int(time.time() * 1000))
+        if method == "GET":
+            query = "&".join(f"{k}={v}" for k, v in sorted((params or {}).items()))
+            signature = self._sign(timestamp, query)
+            response = await self._client.get(path, params=params, headers=self._headers(timestamp, signature))
+        else:
+            payload = json.dumps(body or {}, separators=(",", ":"))
+            signature = self._sign(timestamp, payload)
+            response = await self._client.post(path, content=payload, headers=self._headers(timestamp, signature))
+        response.raise_for_status()
+        data = response.json()
+        if data.get("retCode") not in (0, None):
+            raise BybitAPIError(data.get("retCode"), data.get("retMsg", "unknown error"))
+        return data.get("result", {})
+
+    async def place_order(self, request: OrderRequest) -> BrokerOrder:
+        body = {
+            "category": self.CATEGORY,
+            "symbol": request.symbol,
+            "side": "Buy" if request.side == "buy" else "Sell",
+            "orderType": "Market" if request.order_type == "market" else "Limit",
+            "qty": str(request.quantity),
+        }
+        if request.order_type == "limit" and request.limit_price is not None:
+            body["price"] = str(request.limit_price)
+        if request.client_order_id:
+            body["orderLinkId"] = request.client_order_id
+        if request.stop_price is not None:
+            body["stopLoss"] = str(request.stop_price)
+        if request.take_profit_price is not None:
+            body["takeProfit"] = str(request.take_profit_price)
+
+        result = await self._request("POST", self.ORDER_CREATE_PATH, body=body)
+        return BrokerOrder(
+            broker_order_id=result.get("orderId", ""),
+            client_order_id=result.get("orderLinkId"),
+            symbol=request.symbol,
+            side=request.side,
+            quantity=request.quantity,
+            filled_quantity=0.0,
+            status="submitted",
+        )
+
+    async def cancel_order(self, broker_order_id: str) -> None:
+        await self._request(
+            "POST", self.ORDER_CANCEL_PATH, body={"category": self.CATEGORY, "orderId": broker_order_id}
+        )
+
+    async def modify_order(
+        self,
+        broker_order_id: str,
+        *,
+        quantity: float | None = None,
+        limit_price: float | None = None,
+        stop_price: float | None = None,
+    ) -> BrokerOrder:
+        body: dict = {"category": self.CATEGORY, "orderId": broker_order_id}
+        if quantity is not None:
+            body["qty"] = str(quantity)
+        if limit_price is not None:
+            body["price"] = str(limit_price)
+        if stop_price is not None:
+            body["stopLoss"] = str(stop_price)
+        result = await self._request("POST", self.ORDER_AMEND_PATH, body=body)
+        return BrokerOrder(
+            broker_order_id=broker_order_id,
+            client_order_id=result.get("orderLinkId"),
+            symbol=result.get("symbol", ""),
+            side="buy" if result.get("side") == "Buy" else "sell",
+            quantity=float(result.get("qty", quantity or 0.0)),
+            filled_quantity=float(result.get("cumExecQty", 0.0)),
+            status="submitted",
+        )
+
+    async def get_open_orders(self) -> list[BrokerOrder]:
+        result = await self._request("GET", self.OPEN_ORDERS_PATH, params={"category": self.CATEGORY, "openOnly": 0})
+        orders = []
+        for item in result.get("list", []):
+            orders.append(
+                BrokerOrder(
+                    broker_order_id=item.get("orderId", ""),
+                    client_order_id=item.get("orderLinkId"),
+                    symbol=item.get("symbol", ""),
+                    side="buy" if item.get("side") == "Buy" else "sell",
+                    quantity=float(item.get("qty", 0) or 0),
+                    filled_quantity=float(item.get("cumExecQty", 0) or 0),
+                    status=str(item.get("orderStatus", "")).lower(),
+                    avg_fill_price=float(item.get("avgPrice", 0) or 0) or None,
+                )
+            )
+        return orders
+
+    async def get_positions(self) -> list[BrokerPosition]:
+        result = await self._request("GET", self.POSITIONS_PATH, params={"category": self.CATEGORY})
+        positions = []
+        for item in result.get("list", []):
+            size = float(item.get("size", 0) or 0)
+            if size == 0:
+                continue
+            positions.append(
+                BrokerPosition(
+                    symbol=item["symbol"],
+                    quantity=size,
+                    side="long" if item.get("side") == "Buy" else "short",
+                    avg_entry_price=float(item.get("avgPrice", 0) or 0),
+                    unrealized_pnl=float(item.get("unrealisedPnl", 0) or 0),
+                )
+            )
+        return positions
+
+    async def get_account(self) -> BrokerAccount:
+        result = await self._request("GET", self.WALLET_BALANCE_PATH, params={"accountType": "UNIFIED"})
+        accounts = result.get("list", [{}])
+        acct = accounts[0] if accounts else {}
+        return BrokerAccount(
+            equity=float(acct.get("totalEquity", 0) or 0),
+            buying_power=float(acct.get("totalAvailableBalance", 0) or 0),
+            cash=float(acct.get("totalWalletBalance", 0) or 0),
+            margin_used=float(acct.get("totalMarginBalance", 0) or 0),
+        )
+
+    async def get_balances(self) -> dict[str, float]:
+        account = await self.get_account()
+        return {"cash": account.cash, "equity": account.equity}
+
+    async def stream_fills(self, on_fill: FillCallback) -> None:
+        timestamp = str(int((time.time() + 1) * 1000))
+        signature = hmac.new(
+            self._settings.bybit_api_secret.encode(),
+            f"GET/realtime{timestamp}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        auth_payload = {
+            "op": "auth",
+            "args": [self._settings.bybit_api_key, timestamp, signature],
+        }
+        # Reconnection timing (exponential backoff) is owned by the Recovery
+        # Service, which supervises this coroutine as a restartable task.
+        # This method itself just runs one connection attempt and raises on
+        # disconnect so the supervisor can decide when to retry.
+        try:
+            async with websockets.connect(self._settings.bybit_ws_url, ping_interval=20) as ws:
+                await ws.send(json.dumps(auth_payload))
+                await ws.send(json.dumps({"op": "subscribe", "args": ["order"]}))
+                async for raw in ws:
+                    message = json.loads(raw)
+                    for entry in message.get("data", []):
+                        await on_fill(
+                            BrokerOrder(
+                                broker_order_id=entry.get("orderId", ""),
+                                client_order_id=entry.get("orderLinkId"),
+                                symbol=entry.get("symbol", ""),
+                                side="buy" if entry.get("side") == "Buy" else "sell",
+                                quantity=float(entry.get("qty", 0) or 0),
+                                filled_quantity=float(entry.get("cumExecQty", 0) or 0),
+                                status=str(entry.get("orderStatus", "")).lower(),
+                                avg_fill_price=float(entry.get("avgPrice", 0) or 0) or None,
+                            )
+                        )
+        except (websockets.ConnectionClosed, OSError) as exc:
+            logger.warning("bybit_tradfi fill stream disconnected: %s", exc)
+            self._connected = False
+            raise
