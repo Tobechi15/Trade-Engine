@@ -14,6 +14,7 @@ venv/
 .env
 .env.*
 !.env.example
+!.env.local.example
 
 ## Node / Next.js
 node_modules/
@@ -35,3 +36,5 @@ Thumbs.db
 *.db
 
 docs/
+Agents.md
+CLAUDE.md
