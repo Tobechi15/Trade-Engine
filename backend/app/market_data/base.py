@@ -64,6 +64,13 @@ class MarketDataInterface(ABC):
     @abstractmethod
     async def update_subscriptions(self, symbols: list[str]) -> None: ...
 
+    @abstractmethod
+    async def get_active_symbols(self, limit: int) -> list[str]:
+        """Returns up to `limit` tradeable symbols ranked by recent
+        activity (e.g. 24h turnover), most active first. Used to build the
+        scan candidate pool dynamically instead of a fixed list."""
+        ...
+
     @property
     @abstractmethod
     def is_connected(self) -> bool: ...

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -20,18 +21,18 @@ from app.brokers.base import (
     OrderRequest,
 )
 from app.config import Settings
+from app.core.bybit_symbols import from_bybit_symbol, to_bybit_symbol
 
 logger = logging.getLogger("broker")
 
 # --------------------------------------------------------------------------
-# IMPORTANT: Bybit TradFi (tokenized US equities) is a newer product line.
-# This adapter implements Bybit's standard V5 request-signing scheme, which
-# is stable and well documented, and mirrors the V5 unified-trading request
-# shapes (category / symbol / side / orderType / qty ...). The exact
-# endpoint paths and the `category` value for TradFi equities should be
-# verified against the current Bybit TradFi API reference before live
-# trading - they are kept as class-level constants below so they are easy
-# to correct in one place without touching signing/retry/parsing logic.
+# Bybit TradFi (tokenized US stocks/ETFs) trades as USDT-settled linear
+# perpetual contracts on the standard V5 API - category="linear", symbols
+# like "SPYUSDT" (confirmed via Bybit's TradFi announcements and API docs,
+# see backend/README.md). This adapter implements Bybit's standard V5
+# request-signing scheme against that same category. Symbol translation
+# (plain ticker <-> "{TICKER}USDT") happens only at this boundary - see
+# app/core/bybit_symbols.py.
 # --------------------------------------------------------------------------
 
 
@@ -43,7 +44,7 @@ class BybitAPIError(RuntimeError):
 
 
 class BybitTradFiBroker(BrokerInterface):
-    CATEGORY = "tradfi"  # TODO: confirm against current Bybit TradFi docs
+    CATEGORY = "linear"
     ORDER_CREATE_PATH = "/v5/order/create"
     ORDER_CANCEL_PATH = "/v5/order/cancel"
     ORDER_AMEND_PATH = "/v5/order/amend"
@@ -112,7 +113,7 @@ class BybitTradFiBroker(BrokerInterface):
     async def place_order(self, request: OrderRequest) -> BrokerOrder:
         body = {
             "category": self.CATEGORY,
-            "symbol": request.symbol,
+            "symbol": to_bybit_symbol(request.symbol),
             "side": "Buy" if request.side == "buy" else "Sell",
             "orderType": "Market" if request.order_type == "market" else "Limit",
             "qty": str(request.quantity),
@@ -161,7 +162,7 @@ class BybitTradFiBroker(BrokerInterface):
         return BrokerOrder(
             broker_order_id=broker_order_id,
             client_order_id=result.get("orderLinkId"),
-            symbol=result.get("symbol", ""),
+            symbol=from_bybit_symbol(result.get("symbol", "")),
             side="buy" if result.get("side") == "Buy" else "sell",
             quantity=float(result.get("qty", quantity or 0.0)),
             filled_quantity=float(result.get("cumExecQty", 0.0)),
@@ -176,7 +177,7 @@ class BybitTradFiBroker(BrokerInterface):
                 BrokerOrder(
                     broker_order_id=item.get("orderId", ""),
                     client_order_id=item.get("orderLinkId"),
-                    symbol=item.get("symbol", ""),
+                    symbol=from_bybit_symbol(item.get("symbol", "")),
                     side="buy" if item.get("side") == "Buy" else "sell",
                     quantity=float(item.get("qty", 0) or 0),
                     filled_quantity=float(item.get("cumExecQty", 0) or 0),
@@ -195,7 +196,7 @@ class BybitTradFiBroker(BrokerInterface):
                 continue
             positions.append(
                 BrokerPosition(
-                    symbol=item["symbol"],
+                    symbol=from_bybit_symbol(item["symbol"]),
                     quantity=size,
                     side="long" if item.get("side") == "Buy" else "short",
                     avg_entry_price=float(item.get("avgPrice", 0) or 0),
@@ -234,10 +235,12 @@ class BybitTradFiBroker(BrokerInterface):
         # Service, which supervises this coroutine as a restartable task.
         # This method itself just runs one connection attempt and raises on
         # disconnect so the supervisor can decide when to retry.
+        ping_task: asyncio.Task | None = None
         try:
-            async with websockets.connect(self._settings.bybit_ws_url, ping_interval=20) as ws:
+            async with websockets.connect(self._settings.bybit_ws_url, ping_interval=None) as ws:
                 await ws.send(json.dumps(auth_payload))
                 await ws.send(json.dumps({"op": "subscribe", "args": ["order"]}))
+                ping_task = asyncio.create_task(self._keep_alive(ws))
                 async for raw in ws:
                     message = json.loads(raw)
                     for entry in message.get("data", []):
@@ -245,7 +248,7 @@ class BybitTradFiBroker(BrokerInterface):
                             BrokerOrder(
                                 broker_order_id=entry.get("orderId", ""),
                                 client_order_id=entry.get("orderLinkId"),
-                                symbol=entry.get("symbol", ""),
+                                symbol=from_bybit_symbol(entry.get("symbol", "")),
                                 side="buy" if entry.get("side") == "Buy" else "sell",
                                 quantity=float(entry.get("qty", 0) or 0),
                                 filled_quantity=float(entry.get("cumExecQty", 0) or 0),
@@ -257,3 +260,13 @@ class BybitTradFiBroker(BrokerInterface):
             logger.warning("bybit_tradfi fill stream disconnected: %s", exc)
             self._connected = False
             raise
+        finally:
+            if ping_task:
+                ping_task.cancel()
+
+    async def _keep_alive(self, ws: websockets.WebSocketClientProtocol) -> None:
+        # Bybit's V5 WS expects an application-level ping (not just a
+        # protocol frame) at least every 20s or it drops the connection.
+        while True:
+            await asyncio.sleep(20)
+            await ws.send(json.dumps({"op": "ping"}))

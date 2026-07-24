@@ -24,12 +24,10 @@ class Settings(BaseSettings):
     bybit_env: str = "demo"
     bybit_base_url: str = "https://api-demo.bybit.com"
     bybit_ws_url: str = "wss://stream-demo.bybit.com/v5/private"
+    # Public market data (klines/tickers) is the same feed on demo or live
+    # accounts, so it always points at the mainnet public stream.
+    bybit_public_ws_url: str = "wss://stream.bybit.com/v5/public/linear"
     bybit_recv_window: int = 5000
-
-    alpaca_api_key: str = ""
-    alpaca_api_secret: str = ""
-    alpaca_data_base_url: str = "https://data.alpaca.markets"
-    alpaca_stream_url: str = "wss://stream.data.alpaca.markets/v2/iex"
 
     risk_per_trade_pct: float = 1.25
     daily_loss_limit_pct: float = 4.0

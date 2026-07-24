@@ -29,7 +29,7 @@ async def get_settings_endpoint(engine: TradingEngine = Depends(get_engine)):
     return ok(
         {
             "broker": {"environment": engine.settings.bybit_env, "paper_trading": engine.settings.bybit_env != "live"},
-            "market_data": {"provider": "alpaca"},
+            "market_data": {"provider": "bybit"},
             "strategies": engine.strategy_manager.status(),
             **stored,
         }

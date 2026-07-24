@@ -13,16 +13,20 @@ from app.strategies.base import Strategy
 logger = logging.getLogger("strategy")
 
 # NOTE: the stack has no dedicated news/unusual-activity feed. Universe
-# selection here ranks a configurable candidate pool by premarket gap % and
-# premarket volume (both derivable from Alpaca bars) plus a liquidity floor.
-# News-catalyst / unusual-activity scoring are left as pluggable, zero-
-# weight hooks (score_news / score_unusual_activity) until such a data
-# source is wired in - see `candidate_symbols` in config for the pool.
+# selection ranks a candidate pool by premarket gap % and premarket volume
+# (both derivable from Bybit klines) plus a liquidity floor. News-catalyst /
+# unusual-activity scoring are left as pluggable, zero-weight hooks until
+# such a data source is wired in.
+#
+# By default the candidate pool itself is fetched dynamically each morning
+# via MarketDataService.get_active_symbols() (Bybit TradFi's top symbols by
+# 24h turnover - see app/market_data/bybit.py), not hardcoded. Set
+# `candidate_symbols` in app/data/strategies.yaml to pin a fixed list
+# instead (e.g. for backtesting reproducibility). DEFAULT_CANDIDATES below
+# is only the fallback used if dynamic discovery fails.
 DEFAULT_CANDIDATES = [
-    "AAPL", "MSFT", "NVDA", "AMD", "TSLA", "META", "AMZN", "GOOGL", "NFLX",
-    "AVGO", "CRM", "ADBE", "INTC", "BA", "DIS", "PYPL", "SQ", "SHOP", "UBER",
-    "COIN", "PLTR", "SOFI", "RIVN", "SNAP", "ROKU", "MRNA", "PFE", "XOM",
-    "CVX", "JPM", "BAC", "WMT", "COST", "GE", "F", "GM", "NIO", "MARA", "RIOT", "SMCI",
+    "AAPL", "MSFT", "GOOGL", "NVDA", "TSLA", "META", "ORCL", "INTC", "TSM",
+    "MU", "SNDK", "CRCL", "MSTR", "COIN", "HOOD", "SPY", "QQQ", "EWJ", "EWY",
 ]
 
 
@@ -38,8 +42,15 @@ class OpeningRangeBreakout(Strategy):
         self._max_spread: float = self.config.get("maximum_spread", 0.15)
         self._reward_risk_ratio: float = self.config.get("reward_risk_ratio", 2.0)
         self._max_trades: int = self.config.get("maximum_trades", 10)
-        self._candidate_symbols: list[str] = self.config.get("candidate_symbols", DEFAULT_CANDIDATES)
-        self._min_premarket_volume: float = self.config.get("min_premarket_volume", 200_000)
+        # None (the default) means "fetch the top-active candidate pool
+        # dynamically each morning"; set explicitly to pin a fixed list.
+        self._candidate_symbols: list[str] | None = self.config.get("candidate_symbols")
+        self._candidate_pool_size: int = self.config.get("candidate_pool_size", 30)
+        # Bybit TradFi perpetual volume is contract count, not underlying
+        # share volume, and is far thinner than NYSE/Nasdaq consolidated
+        # tape - this default is a placeholder to tune empirically once
+        # live volume on these instruments has been observed.
+        self._min_premarket_volume: float = self.config.get("min_premarket_volume", 1_000)
 
         self._trades_today = 0
         self._or_builder: dict[str, dict[str, float]] = {}
@@ -60,7 +71,11 @@ class OpeningRangeBreakout(Strategy):
         """Runs before market open (scheduled by the engine). Scans the
         candidate pool, ranks by premarket gap % and volume, and selects
         ~30-40 symbols as today's trading universe."""
-        history = await self._market_data.get_history(self._candidate_symbols, days=14)
+        if self._candidate_symbols is not None:
+            candidates = self._candidate_symbols
+        else:
+            candidates = await self._market_data.get_active_symbols(self._candidate_pool_size)
+        history = await self._market_data.get_history(candidates, days=14)
         scored: list[tuple[str, float]] = []
         for symbol, bars in history.items():
             if len(bars) < 20:

@@ -15,7 +15,7 @@ from app.core.events import EventType
 from app.core.market_calendar import MarketCalendarService, market_calendar
 from app.core.market_state import MarketState
 from app.core.time_service import EXCHANGE_TZ, TimeService
-from app.market_data.alpaca import AlpacaMarketData
+from app.market_data.bybit import BybitMarketData
 from app.services.analytics_service import AnalyticsService
 from app.services.logging_service import LoggingService, configure_logging
 from app.services.market_data_service import MarketDataService
@@ -59,7 +59,7 @@ class TradingEngine:
         self.market_calendar: MarketCalendarService = market_calendar
 
         self.broker = BybitTradFiBroker(settings)
-        self.market_data_provider = AlpacaMarketData(settings)
+        self.market_data_provider = BybitMarketData(settings)
         self.market_data_service = MarketDataService(self.event_bus, self.market_state, self.market_data_provider)
 
         self.order_manager = OrderManager(self.event_bus, self.market_state, self.broker)

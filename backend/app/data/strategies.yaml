@@ -1,13 +1,20 @@
 orb:
   enabled: true
   rvol_threshold: 3
-  universe_size: 40
+  universe_size: 30
+  # candidate_pool_size: how many top-active symbols MarketDataService
+  # fetches dynamically each morning before gap%/volume scoring narrows it
+  # down to universe_size. Set `candidate_symbols: [...]` here instead to
+  # pin a fixed pool (e.g. for backtesting).
+  candidate_pool_size: 60
   opening_range: 5
   maximum_spread: 0.15
   risk: 1.25
   reward_risk_ratio: 2.0
   maximum_trades: 10
-  min_premarket_volume: 200000
+  # Placeholder - Bybit TradFi perpetual volume is contract count, not
+  # underlying share volume; tune once you've observed real volume.
+  min_premarket_volume: 1000
 
 noise:
   enabled: true
