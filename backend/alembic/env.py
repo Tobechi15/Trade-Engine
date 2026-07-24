@@ -6,14 +6,15 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 from sqlalchemy import pool
 
 from app.config import get_settings
-from app.db.base import Base
+from app.db.base import Base, build_engine_url_and_connect_args
 from app.db import models  # noqa: F401  (ensures models are registered on Base.metadata)
 
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+_engine_url, _connect_args = build_engine_url_and_connect_args(get_settings().database_url)
+config.set_main_option("sqlalchemy.url", _engine_url.render_as_string(hide_password=False))
 target_metadata = Base.metadata
 
 
@@ -35,6 +36,7 @@ async def run_migrations_online() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=_connect_args,
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)
