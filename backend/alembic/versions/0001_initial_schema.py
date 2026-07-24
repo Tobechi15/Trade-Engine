@@ -39,8 +39,6 @@ def upgrade() -> None:
         sa.Column("exit_reason", sa.String(), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
-    op.create_index("ix_trades_strategy", "trades", ["strategy"])
-    op.create_index("ix_trades_symbol", "trades", ["symbol"])
 
     op.create_table(
         "orders",
@@ -57,17 +55,13 @@ def upgrade() -> None:
         sa.Column("stop_price", sa.Float(), nullable=True),
         sa.Column("take_profit_price", sa.Float(), nullable=True),
         sa.Column("avg_fill_price", sa.Float(), nullable=True),
-        sa.Column("status", sa.String(), server_default="pending"),
+        sa.Column("status", sa.String(), index=True, server_default="pending"),
         sa.Column("submitted_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("filled_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("cancelled_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
-    op.create_index("ix_orders_broker_order_id", "orders", ["broker_order_id"])
-    op.create_index("ix_orders_strategy", "orders", ["strategy"])
-    op.create_index("ix_orders_symbol", "orders", ["symbol"])
-    op.create_index("ix_orders_status", "orders", ["status"])
 
     op.create_table(
         "strategy_performance",
@@ -135,9 +129,8 @@ def upgrade() -> None:
         sa.Column("message", sa.String()),
         sa.Column("strategy", sa.String(), nullable=True, index=True),
         sa.Column("context", sa.JSON(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), index=True, server_default=sa.func.now()),
     )
-    op.create_index("ix_audit_logs_created_at", "audit_logs", ["created_at"])
 
 
 def downgrade() -> None:
