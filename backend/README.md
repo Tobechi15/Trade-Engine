@@ -16,7 +16,7 @@ Required values in `.env` before the engine can actually trade:
 
 - `DATABASE_URL` - your Neon Postgres connection string (`postgresql+asyncpg://...`). Paste Neon's copy-pasted string as-is (`?sslmode=require&channel_binding=require` included) - `app/db/base.py` sanitizes it for asyncpg automatically.
 - `BYBIT_API_KEY` / `BYBIT_API_SECRET` - **execution only**. Bybit TradFi (tokenized US stocks/ETFs) trades as USDT-settled linear perpetuals on the standard V5 API (`category=linear`, symbols like `SPYUSDT`) - confirmed against Bybit's TradFi announcements and API docs.
-- `ALPACA_API_KEY` / `ALPACA_API_SECRET` - **market data only**. [Alpaca](https://alpaca.markets) is used for historical bars, live streaming (bars + quotes), the dynamic scan universe (most-actives screener), and index data (VIX, NYSE breadth - see below).
+- `ALPACA_API_KEY` / `ALPACA_API_SECRET` - **market data only**. [Alpaca](https://alpaca.markets) is used for historical bars, live streaming (bars + quotes), and the dynamic scan universe (most-actives screener).
 - `JWT_SECRET`, `OPERATOR_USERNAME`, `OPERATOR_PASSWORD` - dashboard login.
 
 **Two different providers, two different symbol universes**: Alpaca covers the whole US equities market; Bybit TradFi currently lists ~300 stocks/ETFs/forex/commodities. `BrokerInterface.get_tradeable_symbols()` (fetched once at startup into `MarketState.tradeable_symbols`) is used to filter ORB's dynamically-discovered scan universe down to what Bybit can actually execute - see `app/strategies/orb.py: build_universe()`.
@@ -25,7 +25,7 @@ Required values in `.env` before the engine can actually trade:
 - Bybit's `symbolType` field on `/v5/market/instruments-info` (used to filter stocks/ETFs out of the crypto-perp-heavy `linear` category) - see `app/brokers/bybit_tradfi.py: TRADFI_SYMBOL_TYPES`.
 - The most-actives screener response shape (`most_actives` key) - see `app/market_data/alpaca.py: get_active_symbols()`.
 - The exact WebSocket error codes for entitlement rejection (Alpaca's docs list `409` as "insufficient subscription" - the plan/feed mismatch case - which this adapter maps to `ProviderAuthError` along with `402`/`403`/`404`/`405`).
-- Whether Alpaca carries macro indices (VIX, NYSE $ADD breadth) at all via the stocks API - `get_index_value()` always returns `None`, and the `breadth_pullback` strategy sits out entirely rather than trading without the filter (never fabricates a value).
+- Alpaca doesn't carry macro indices (VIX, NYSE $ADD breadth) via the stocks API - `get_index_value()` always returns `None` and is unused now. `gap_fill` and `breadth_pullback` no longer depend on it: `gap_fill`'s regime filter is 20-day annualized Parkinson historical volatility on the target symbol itself (`app/core/indicators.py: parkinson_volatility()`), and `breadth_pullback`'s breadth filter is sector-ETF trend alignment (XLK/XLF/XLY/XLE vs. their own session VWAP, `app/strategies/breadth_pullback.py: _sector_alignment()`) - both computed locally from bars already being fetched, no extra API dependency.
 
 Confirmed via direct doc fetches (`docs.alpaca.markets`): the REST base (`data.alpaca.markets`), `APCA-API-KEY-ID`/`APCA-API-SECRET-KEY` auth headers, the multi-symbol bars endpoint shape (`/v2/stocks/bars`, keyed by symbol, `next_page_token` pagination), and the WebSocket protocol (`wss://stream.data.alpaca.markets/v2/{feed}`, `auth`/`subscribe` action messages) - and Bybit TradFi's ~300-instrument catalog, `category=linear`, `{TICKER}USDT` symbol format.
 

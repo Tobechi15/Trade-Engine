@@ -77,7 +77,16 @@ class RiskEngine:
                 max_strategy_allocation_pct=row.max_strategy_allocation_pct,
                 max_spread_pct=row.max_spread_pct,
                 max_slippage_pct=row.max_slippage_pct,
-                strategy_allocation=row.strategy_allocation or self.settings.strategy_allocation,
+                # Merge, not replace: a persisted row created before a
+                # strategy existed must not silently zero out its
+                # allocation forever - RiskEngine._on_signal() treats a
+                # missing key as 0% allowed notional, which rejects every
+                # signal from that strategy with no visible error beyond
+                # "allocation exhausted" (confirmed: this is exactly what
+                # happened to vwap_reversion/gap_fill/breadth_pullback
+                # after they were added later than this table's first
+                # row). Values explicitly set in the row still win.
+                strategy_allocation={**self.settings.strategy_allocation, **(row.strategy_allocation or {})},
                 trading_enabled=row.trading_enabled,
             )
 

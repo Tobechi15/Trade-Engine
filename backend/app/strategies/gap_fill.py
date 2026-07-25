@@ -5,7 +5,7 @@ from datetime import time
 
 from app.core.event_bus import Event
 from app.core.events import EventType
-from app.core.indicators import BarResampler, atr as compute_atr
+from app.core.indicators import BarResampler, atr as compute_atr, parkinson_volatility
 from app.core.time_service import TimeService
 from app.services.market_data_service import MarketDataService
 from app.strategies.base import Strategy
@@ -16,7 +16,13 @@ logger = logging.getLogger("strategy")
 class OpeningGapFill(Strategy):
     """Conditional Opening Gap Fill. Fades a moderate opening gap (0.15%-
     0.60%) back toward yesterday's close, only when the first 5-minute
-    candle confirms a reversal and the VIX regime isn't stressed.
+    candle confirms a reversal and the volatility regime isn't stressed.
+
+    No $VIX feed is available from Alpaca's stocks API, so the regime
+    filter is computed locally instead: 20-day annualized Parkinson
+    historical volatility on the target symbol itself (see
+    app/core/indicators.py: parkinson_volatility()), gating entries the
+    same way a VIX>=25 check would have.
 
     Daily ATR(14) is used for the stop distance rather than an intraday
     5-minute ATR: at the 09:35 decision point there's only one 5-minute bar
@@ -31,7 +37,8 @@ class OpeningGapFill(Strategy):
         self._universe: list[str] = self.config.get("universe", ["SPY", "QQQ"])
         self._min_gap_pct: float = self.config.get("min_gap_pct", 0.0015)
         self._max_gap_pct: float = self.config.get("max_gap_pct", 0.0060)
-        self._vix_threshold: float = self.config.get("vix_threshold", 25.0)
+        self._volatility_threshold: float = self.config.get("volatility_threshold", 0.25)
+        self._volatility_window: int = self.config.get("volatility_window", 20)
         self._atr_period: int = self.config.get("atr_period", 14)
         self._partial_fill_fraction: float = self.config.get("partial_fill_fraction", 0.75)
         self._hard_time_stop = _parse_hhmm(self.config.get("hard_time_stop", "11:30"))
@@ -40,6 +47,7 @@ class OpeningGapFill(Strategy):
         self._resampler = BarResampler(minutes=5)
         self._prior_close: dict[str, float] = {}
         self._daily_atr: dict[str, float] = {}
+        self._daily_volatility: dict[str, float] = {}
         self._evaluated_today: set[str] = set()
         self._partial_taken: set[str] = set()
         self._trades_today = 0
@@ -66,6 +74,9 @@ class OpeningGapFill(Strategy):
             atr_value = compute_atr(bars, self._atr_period)
             if atr_value:
                 self._daily_atr[symbol] = atr_value
+            volatility = parkinson_volatility(bars, self._volatility_window)
+            if volatility is not None:
+                self._daily_volatility[symbol] = volatility
 
     async def on_event(self, event: Event) -> None:
         if event.event_type == EventType.MARKET_OPEN:
@@ -111,11 +122,15 @@ class OpeningGapFill(Strategy):
         if not prior_close:
             return
 
-        vix = await self._market_data.get_index_value("VIX")
-        if vix is not None and vix >= self._vix_threshold:
-            return  # elevated volatility regime - sit out
-        if vix is None:
-            logger.warning("gap_fill: VIX unavailable, proceeding without the regime filter for %s", symbol)
+        volatility = self._daily_volatility.get(symbol)
+        if volatility is not None and volatility > self._volatility_threshold:
+            return  # elevated volatility regime (Parkinson HV) - sit out
+        if volatility is None:
+            logger.warning(
+                "gap_fill: not enough daily history yet for the Parkinson volatility filter on %s - "
+                "proceeding without the regime filter",
+                symbol,
+            )
 
         today_open = first_bar.open
         gap_pct = (today_open - prior_close) / prior_close

@@ -53,7 +53,12 @@ gap_fill:
   universe: ["SPY", "QQQ"]
   min_gap_pct: 0.0015
   max_gap_pct: 0.0060
-  vix_threshold: 25.0
+  # No $VIX feed from Alpaca - regime filter is 20-day annualized Parkinson
+  # historical volatility on the target symbol itself (see
+  # app/core/indicators.py: parkinson_volatility()). 0.25 = 25%, sit out
+  # above that, same gating a VIX>=25 check would have done.
+  volatility_threshold: 0.25
+  volatility_window: 20
   atr_period: 14
   partial_fill_fraction: 0.75
   hard_time_stop: "11:30"
@@ -63,7 +68,12 @@ gap_fill:
 breadth_pullback:
   enabled: true
   universe: ["SPY", "QQQ"]
-  breadth_threshold: 1000.0
+  # No NYSE $ADD feed from Alpaca - breadth filter is replaced with sector
+  # ETF trend alignment: at least sector_alignment_min of sector_universe
+  # must be on the same side of their own session VWAP as the trade
+  # direction (see app/strategies/breadth_pullback.py: _sector_alignment()).
+  sector_universe: ["XLK", "XLF", "XLY", "XLE"]
+  sector_alignment_min: 3
   atr_period: 14
   atr_multiplier: 1.2
   reward_risk_ratio: 2.0

@@ -15,15 +15,19 @@ logger = logging.getLogger("strategy")
 
 
 class BreadthVwapPullback(Strategy):
-    """Breadth-Filtered VWAP Pullback. Trend-continuation entries on a
-    shallow pullback to session VWAP, gated by NYSE breadth ($ADD) and
-    the symbol's own position relative to its VWAP.
+    """Sector-Aligned VWAP Pullback. Trend-continuation entries on a
+    shallow pullback to session VWAP, gated by sector-ETF trend alignment
+    and the symbol's own position relative to its VWAP.
 
-    NYSE $ADD (advance-decline breadth) availability from the market data
-    provider is unconfirmed (see app/market_data/alpaca.py). If it's
-    unavailable, get_index_value() returns None and this strategy sits out
-    entirely rather than trading without the breadth filter - "no data"
-    must never be treated as "condition satisfied"."""
+    NYSE $ADD (advance-decline breadth) isn't available from Alpaca's
+    stocks API, so the breadth filter is replaced with a local proxy: at
+    least `sector_alignment_min` of the core sector ETFs (XLK/XLF/XLY/XLE
+    by default) must be trading on the same side of their own session
+    VWAP as the trade direction (see _sector_alignment()). This still
+    guards against buying a pullback that only 1-2 mega-cap stocks are
+    driving, without needing an index feed - "not enough sectors aligned"
+    is treated the same way "no breadth data" used to be: sit out, never
+    treat missing confirmation as satisfied."""
 
     name = "breadth_pullback"
 
@@ -31,7 +35,9 @@ class BreadthVwapPullback(Strategy):
         super().__init__(*args, **kwargs)
         self._market_data = market_data_service
         self._universe: list[str] = self.config.get("universe", ["SPY", "QQQ"])
-        self._breadth_threshold: float = self.config.get("breadth_threshold", 1000.0)
+        self._sector_symbols: list[str] = self.config.get("sector_universe", ["XLK", "XLF", "XLY", "XLE"])
+        self._sector_alignment_min: int = self.config.get("sector_alignment_min", 3)
+        self._all_symbols: list[str] = list(dict.fromkeys(self._universe + self._sector_symbols))
         self._atr_period: int = self.config.get("atr_period", 14)
         self._atr_multiplier: float = self.config.get("atr_multiplier", 1.2)
         self._reward_risk_ratio: float = self.config.get("reward_risk_ratio", 2.0)
@@ -42,10 +48,10 @@ class BreadthVwapPullback(Strategy):
 
         self._resampler = BarResampler(minutes=5)
         self._vwap: dict[str, VWAPState] = {}
+        self._last_price: dict[str, float] = {}
         self._bars5m: dict[str, list[Bar]] = {}
         self._session_high: dict[str, float] = {}
         self._session_low: dict[str, float] = {}
-        self._breadth_unavailable_logged = False
         self._trades_today = 0
 
     def subscribed_events(self) -> list[EventType]:
@@ -55,7 +61,7 @@ class BreadthVwapPullback(Strategy):
         pass
 
     async def start(self) -> None:
-        await self._market_data.start_streaming(self._universe)
+        await self._market_data.start_streaming(self._all_symbols)
 
     async def stop(self) -> None:
         pass
@@ -64,7 +70,8 @@ class BreadthVwapPullback(Strategy):
         if event.event_type == EventType.MARKET_OPEN:
             self._trades_today = 0
             self._resampler.reset()
-            self._vwap = {s: VWAPState() for s in self._universe}
+            self._vwap = {s: VWAPState() for s in self._all_symbols}
+            self._last_price = {}
             self._bars5m = {s: [] for s in self._universe}
             self._session_high = {}
             self._session_low = {}
@@ -77,11 +84,16 @@ class BreadthVwapPullback(Strategy):
 
     async def _on_candle(self, payload: dict, *, generate_signals: bool) -> None:
         symbol = payload["symbol"]
-        if symbol not in self._universe:
+        if symbol not in self._all_symbols:
             return
 
         typical_price = (payload["high"] + payload["low"] + payload["close"]) / 3
         self._vwap.setdefault(symbol, VWAPState()).update(typical_price, payload["volume"])
+        self._last_price[symbol] = payload["close"]
+
+        if symbol not in self._universe:
+            return  # sector ETF - tracked only for the breadth-replacement filter, never traded
+
         self._session_high[symbol] = max(self._session_high.get(symbol, payload["high"]), payload["high"])
         self._session_low[symbol] = min(self._session_low.get(symbol, payload["low"]), payload["low"])
 
@@ -106,6 +118,19 @@ class BreadthVwapPullback(Strategy):
 
         await self._evaluate_entry(symbol, bar, exchange_time)
 
+    def _sector_alignment(self, *, bullish: bool) -> bool:
+        aligned = 0
+        for sector in self._sector_symbols:
+            vwap_state = self._vwap.get(sector)
+            price = self._last_price.get(sector)
+            if vwap_state is None or price is None or not vwap_state.vwap:
+                continue
+            if bullish and price > vwap_state.vwap:
+                aligned += 1
+            elif not bullish and price < vwap_state.vwap:
+                aligned += 1
+        return aligned >= self._sector_alignment_min
+
     async def _evaluate_entry(self, symbol: str, bar: Bar, exchange_time) -> None:
         if not (self._entry_start <= exchange_time.time() <= self._entry_end):
             return
@@ -114,25 +139,15 @@ class BreadthVwapPullback(Strategy):
         if symbol in self._state.active_positions or symbol in self._open_trades:
             return
 
-        breadth = await self._market_data.get_index_value("ADD")
-        if breadth is None:
-            if not self._breadth_unavailable_logged:
-                logger.warning(
-                    "breadth_pullback: NYSE $ADD breadth data unavailable from the market data "
-                    "provider - sitting out rather than trading without the breadth filter"
-                )
-                self._breadth_unavailable_logged = True
-            return
-
         vwap_state = self._vwap[symbol]
         vwap = vwap_state.vwap
         if not vwap:
             return
 
         direction: str | None = None
-        if breadth > self._breadth_threshold and bar.close > vwap and bar.low <= vwap and bar.close > vwap:
+        if bar.close > vwap and bar.low <= vwap and self._sector_alignment(bullish=True):
             direction = "long"
-        elif breadth < -self._breadth_threshold and bar.close < vwap and bar.high >= vwap and bar.close < vwap:
+        elif bar.close < vwap and bar.high >= vwap and self._sector_alignment(bullish=False):
             direction = "short"
         if direction is None:
             return
@@ -162,9 +177,10 @@ class BreadthVwapPullback(Strategy):
         self._trades_today += 1
 
     async def recover_state(self) -> None:
-        history = await self._market_data.get_history(self._universe, days=1, timeframe="1Min")
+        history = await self._market_data.get_history(self._all_symbols, days=1, timeframe="1Min")
         today = TimeService.now_exchange().date()
-        self._vwap = {s: VWAPState() for s in self._universe}
+        self._vwap = {s: VWAPState() for s in self._all_symbols}
+        self._last_price = {}
         self._bars5m = {s: [] for s in self._universe}
         self._session_high = {}
         self._session_low = {}
@@ -180,7 +196,7 @@ class BreadthVwapPullback(Strategy):
                     },
                     generate_signals=False,
                 )
-        await self._market_data.start_streaming(self._universe)
+        await self._market_data.start_streaming(self._all_symbols)
         logger.info("breadth_pullback state recovered")
 
 

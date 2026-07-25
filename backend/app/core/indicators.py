@@ -62,6 +62,20 @@ def adx(bars: list[Bar], period: int = 14) -> float | None:
     return adx_series[-1] if adx_series else None
 
 
+def parkinson_volatility(bars: list[Bar], window: int = 20) -> float | None:
+    """Annualized Parkinson historical volatility from daily High/Low bars
+    - a local stand-in for a $VIX feed (see app/strategies/gap_fill.py).
+    Needs at least `window` daily bars; returns None otherwise so callers
+    can decide how to treat "not enough history yet" (never silently
+    substitute a guessed regime)."""
+    if len(bars) < window:
+        return None
+    recent = bars[-window:]
+    log_hl_sq = sum(math.log(b.high / b.low) ** 2 for b in recent)
+    variance = log_hl_sq / (4 * window * math.log(2))
+    return math.sqrt(variance * 252)
+
+
 @dataclass(slots=True)
 class VWAPState:
     """Session-anchored VWAP with volume-weighted standard deviation bands.
