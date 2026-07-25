@@ -44,14 +44,21 @@ logger = logging.getLogger("market_data")
 # production:
 #   - The most-actives screener response shape (`most_actives` key) used by
 #     get_active_symbols().
-#   - The exact WS error codes for entitlement rejection (this adapter
-#     treats any pre-subscribe "error" frame, and codes 402/405/409 in
-#     particular, as ProviderAuthError - Alpaca's docs list 409 as
-#     "insufficient subscription", i.e. the plan/feed mismatch case).
 #   - Whether Alpaca carries macro indices (e.g. VIX, NYSE $ADD breadth) at
 #     all via the stocks API - get_index_value() returns None rather than
 #     guess, since callers must treat "no data" as "condition not met", not
 #     "condition satisfied" (see app/strategies/breadth_pullback.py).
+#
+# Confirmed live in production (2026-07-25): code 406 ("connection limit
+# exceeded") is NOT an entitlement problem - it means this same API key
+# already has another WebSocket connection open elsewhere (Basic/free plan
+# allows exactly one at a time). It's usually transient - a stale
+# connection from a previous deploy/process that hasn't timed out yet, or
+# a second client using the same key - and clears on its own. Unlike a bad
+# key or a plan/feed mismatch, retrying soon can succeed, so it must NOT
+# get the hour-long ProviderAuthError backoff; only codes that genuinely
+# won't resolve without a human (bad credentials, insufficient
+# subscription for the requested feed) do.
 _ALLOWED_TIMEFRAMES = {"1Min", "5Min", "15Min", "1Hour", "1Day"}
 _AUTH_REJECT_CODES = {402, 403, 404, 405, 409}
 
@@ -213,17 +220,25 @@ class AlpacaMarketData(MarketDataInterface):
                 auth_response = json.loads(await ws.recv())
                 auth_frame = auth_response[0] if auth_response else {}
                 if auth_frame.get("T") != "success" or auth_frame.get("msg") != "authenticated":
-                    # Confirmed: Alpaca's Basic/free plan only entitles the
-                    # "iex" feed - requesting "sip" here is where that
-                    # rejection shows up (an auth/entitlement error, not a
-                    # transient disconnect). RecoveryService backs off far
-                    # longer for ProviderAuthError than for a normal drop,
-                    # since retrying every 30s will never succeed on this
-                    # plan/feed combination.
-                    raise ProviderAuthError(
-                        f"Alpaca WebSocket auth/entitlement rejected: {auth_response} - "
-                        f"confirm your plan includes the '{self._settings.alpaca_feed}' feed"
-                    )
+                    code = auth_frame.get("code")
+                    if code in _AUTH_REJECT_CODES:
+                        # Confirmed: Alpaca's Basic/free plan only entitles
+                        # the "iex" feed - requesting "sip" here is where
+                        # that rejection shows up (an auth/entitlement
+                        # error, not a transient disconnect). RecoveryService
+                        # backs off far longer for ProviderAuthError than
+                        # for a normal drop, since retrying every 30s will
+                        # never succeed on this plan/feed combination.
+                        raise ProviderAuthError(
+                            f"Alpaca WebSocket auth/entitlement rejected: {auth_response} - "
+                            f"confirm your plan includes the '{self._settings.alpaca_feed}' feed"
+                        )
+                    # Anything else (e.g. code 406 "connection limit
+                    # exceeded" - a stale connection elsewhere on the same
+                    # key, not a credentials/plan problem) is treated as an
+                    # ordinary transient failure so RecoveryService retries
+                    # on the fast schedule instead of backing off an hour.
+                    raise RuntimeError(f"Alpaca WebSocket auth rejected (non-entitlement): {auth_response}")
 
                 await ws.send(json.dumps({"action": "subscribe", "quotes": symbols, "bars": symbols}))
 
