@@ -152,7 +152,16 @@ class TradingEngine:
         await self.strategy_manager.initialize_all()
 
         self.status = EngineStatus.RECOVERING
-        await self.state_recovery_service.recover()
+        try:
+            await self.state_recovery_service.recover()
+        except Exception:
+            # StateRecoveryService already logs + publishes RECOVERY_FAILED
+            # internally; the safety net here just prevents an unexpected
+            # failure from taking the whole engine down to "stopped" -
+            # trading stays effectively paused (per-strategy failures
+            # already disable themselves in StrategyManager), but the API,
+            # dashboard, and health reporting keep working.
+            logger.exception("state recovery failed - continuing with degraded/partial state")
 
         await self.strategy_manager.start_all()
         self.recovery_service.start()
