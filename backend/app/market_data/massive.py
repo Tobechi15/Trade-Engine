@@ -10,16 +10,10 @@ import websockets
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.config import Settings
+from app.core.exceptions import ProviderAuthError
 from app.market_data.base import Bar, BarCallback, MarketDataInterface, QuoteCallback, QuoteTick
 
 logger = logging.getLogger("market_data")
-
-
-class MassiveWSError(RuntimeError):
-    """Raised when Massive's WebSocket reports an auth/subscribe failure.
-    Deliberately not a subclass of ConnectionClosed/OSError so it isn't
-    silently reclassified as a generic disconnect - callers (RecoveryService)
-    still catch it via the general Exception handler and back off."""
 
 # Massive (formerly Polygon.io, rebranded 2025-10-30 - see
 # https://massive.com/blog/polygon-is-now-massive) is used for market data
@@ -124,17 +118,40 @@ class MassiveMarketData(MarketDataInterface):
 
     async def get_active_symbols(self, limit: int) -> list[str]:
         """Ranks the full US stocks snapshot by dollar volume (day.v *
-        day.vw) and returns the top `limit` tickers, most active first."""
-        response = await self._client.get("/v2/snapshot/locale/us/markets/stocks/tickers")
-        response.raise_for_status()
-        tickers = response.json().get("tickers", [])
+        day.vw) and returns the top `limit` tickers, most active first.
+        Falls back to the static candidate list if the snapshot endpoint
+        isn't available on the current plan (confirmed: not included on
+        Massive's free tier) - never raises, since ORB's universe-building
+        needs *some* candidate pool to proceed with."""
+        try:
+            response = await self._client.get("/v2/snapshot/locale/us/markets/stocks/tickers")
+            response.raise_for_status()
+            tickers = response.json().get("tickers", [])
 
-        def dollar_volume(item: dict) -> float:
-            day = item.get("day") or {}
-            return float(day.get("v") or 0) * float(day.get("vw") or day.get("c") or 0)
+            def dollar_volume(item: dict) -> float:
+                day = item.get("day") or {}
+                return float(day.get("v") or 0) * float(day.get("vw") or day.get("c") or 0)
 
-        ranked = sorted(tickers, key=dollar_volume, reverse=True)
-        return [t["ticker"] for t in ranked[:limit] if t.get("ticker")]
+            ranked = sorted(tickers, key=dollar_volume, reverse=True)
+            symbols = [t["ticker"] for t in ranked[:limit] if t.get("ticker")]
+            if symbols:
+                return symbols
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                logger.warning(
+                    "get_active_symbols: full-market snapshot not available on the current Massive "
+                    "plan (HTTP %d) - falling back to the static candidate list. Upgrade to Stocks "
+                    "Starter or higher for dynamic universe discovery.",
+                    exc.response.status_code,
+                )
+            else:
+                logger.exception("get_active_symbols: snapshot request failed - falling back to static candidates")
+        except Exception:
+            logger.exception("get_active_symbols: unexpected failure - falling back to static candidates")
+
+        from app.strategies.orb import DEFAULT_CANDIDATES
+
+        return DEFAULT_CANDIDATES[:limit]
 
     async def get_index_value(self, index_symbol: str) -> float | None:
         """Latest close for an index ticker (e.g. "VIX" -> "I:VIX", "ADD"
@@ -175,7 +192,17 @@ class MassiveMarketData(MarketDataInterface):
                 auth_response = json.loads(await ws.recv())
                 auth_status = (auth_response[0] if auth_response else {}).get("status")
                 if auth_status != "auth_success":
-                    raise MassiveWSError(f"authentication failed: {auth_response}")
+                    # Confirmed: Massive's free tier doesn't include
+                    # WebSocket streaming at all - this is where that
+                    # shows up (an auth/entitlement rejection, not a
+                    # transient disconnect). RecoveryService backs off far
+                    # longer for ProviderAuthError than for a normal drop,
+                    # since retrying every 30s will never succeed on this
+                    # plan.
+                    raise ProviderAuthError(
+                        f"Massive WebSocket auth/entitlement rejected: {auth_response} - "
+                        "confirm your plan includes WebSocket streaming (not included on the free tier)"
+                    )
 
                 await ws.send(json.dumps({"action": "subscribe", "params": args}))
 
@@ -207,6 +234,17 @@ class MassiveMarketData(MarketDataInterface):
                                     timestamp=datetime.fromtimestamp(message.get("t", 0) / 1000, tz=UTC),
                                 )
                             )
+        except websockets.InvalidStatus as exc:
+            # The server can also reject the handshake itself (before any
+            # of our own auth/subscribe messages) with a plain HTTP status
+            # if the plan doesn't allow a WS upgrade at all.
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            if status_code in (401, 403):
+                raise ProviderAuthError(
+                    f"Massive WebSocket handshake rejected (HTTP {status_code}) - confirm your plan "
+                    "includes WebSocket streaming (not included on the free tier)"
+                ) from exc
+            raise
         except (websockets.ConnectionClosed, OSError) as exc:
             logger.warning("massive market data stream disconnected: %s", exc)
             self._connected = False

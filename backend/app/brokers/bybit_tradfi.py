@@ -22,6 +22,7 @@ from app.brokers.base import (
 )
 from app.config import Settings
 from app.core.bybit_symbols import from_bybit_symbol, to_bybit_symbol
+from app.core.exceptions import ProviderAuthError
 
 logger = logging.getLogger("broker")
 
@@ -72,7 +73,18 @@ class BybitTradFiBroker(BrokerInterface):
     def is_connected(self) -> bool:
         return self._connected
 
+    def _require_credentials(self) -> None:
+        # A known, deterministic case worth short-circuiting rather than
+        # guessing at Bybit's response shape for missing credentials: no
+        # key/secret configured at all means auth will never succeed until
+        # they're set, so fail fast without even a network round-trip -
+        # RecoveryService backs off this class of error much longer than
+        # an ordinary dropped connection (ProviderAuthError).
+        if not self._settings.bybit_api_key or not self._settings.bybit_api_secret:
+            raise ProviderAuthError("BYBIT_API_KEY / BYBIT_API_SECRET not configured")
+
     async def connect(self) -> None:
+        self._require_credentials()
         # Validate credentials with a lightweight authenticated call.
         await self.get_account()
         self._connected = True
@@ -248,6 +260,7 @@ class BybitTradFiBroker(BrokerInterface):
         return {"cash": account.cash, "equity": account.equity}
 
     async def stream_fills(self, on_fill: FillCallback) -> None:
+        self._require_credentials()
         timestamp = str(int((time.time() + 1) * 1000))
         signature = hmac.new(
             self._settings.bybit_api_secret.encode(),

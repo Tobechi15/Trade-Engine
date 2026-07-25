@@ -28,6 +28,11 @@ Required values in `.env` before the engine can actually trade:
 
 Confirmed via direct doc/API fetches: Massive's REST base (`api.massive.com`), the `Authorization: Bearer` auth scheme, the aggregates/snapshot endpoint shapes, and indices ticker format (`I:VIX`, `I:SPX`, etc.) - and Bybit TradFi's ~300-instrument catalog, `category=linear`, `{TICKER}USDT` symbol format.
 
+**Massive's free "Stocks Basic" tier is End-of-Day data only** (confirmed against pricing + live 403s in production): no WebSocket streaming, no full-market snapshot endpoint, 5 API calls/minute. There is no code fix for this - a plan/cost decision, not a bug. `Stocks Starter` ($29/mo) adds unlimited calls + WebSocket + snapshot with a 15-minute delay; `Stocks Advanced` ($199/mo) adds genuine real-time data. Until upgraded, the engine degrades gracefully rather than erroring:
+- `get_active_symbols()` falls back to the static `DEFAULT_CANDIDATES` list if the snapshot endpoint 403s.
+- `stream()`/`stream_fills()` raise `ProviderAuthError` (`app/core/exceptions.py`) on any auth/entitlement rejection - handshake-level or app-level, for both Massive and Bybit (including the deterministic case of simply not having Bybit keys configured, checked before any network call). `RecoveryService` backs this off for a full hour and logs/notifies only once per outage instead of retrying every 30s forever (that tight retry loop is what originally tripped Massive's rate limit).
+- None of this makes EOD-only data support live intraday trading - it just means the engine runs without spamming errors while you decide whether/when to upgrade.
+
 ## Database
 
 ```bash

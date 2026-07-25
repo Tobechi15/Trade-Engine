@@ -2,7 +2,8 @@ import asyncio
 
 import pytest
 
-from app.services.recovery_service import BACKOFF_SCHEDULE_SECONDS, RecoveryService
+from app.core.exceptions import ProviderAuthError
+from app.services.recovery_service import BACKOFF_SCHEDULE_SECONDS, NOT_ENTITLED_BACKOFF_SECONDS, RecoveryService
 
 
 @pytest.mark.asyncio
@@ -82,3 +83,36 @@ async def test_backoff_resets_after_a_stable_connection(event_bus, monkeypatch):
     # very next backoff should be the fast-end delay, not a continuation
     # of the earlier 3-attempt streak.
     assert sleeps == [BACKOFF_SCHEDULE_SECONDS[0]]
+
+
+@pytest.mark.asyncio
+async def test_provider_auth_error_backs_off_for_an_hour_and_logs_once(event_bus, monkeypatch, caplog):
+    """Regression test: a plan/credential rejection (e.g. Massive's free
+    tier not including WebSocket streaming, or no Bybit keys configured)
+    must not retry every 30s forever - it should wait the long
+    not-entitled backoff and only log/notify once, not on every retry."""
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) >= 3:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    service = RecoveryService(event_bus, broker=object(), market_data_service=object(), order_manager=object())
+
+    async def not_entitled_stream() -> None:
+        raise ProviderAuthError("plan does not include this feature")
+
+    with caplog.at_level("ERROR", logger="recovery"):
+        with pytest.raises(asyncio.CancelledError):
+            await service._supervise("market_data", not_entitled_stream)
+
+    # Always the long backoff, never the fast schedule.
+    assert sleeps == [NOT_ENTITLED_BACKOFF_SECONDS] * 3
+    # Only the first occurrence logs at ERROR ("not available"); repeats
+    # are quieter (INFO), so there should be exactly one ERROR record.
+    error_records = [r for r in caplog.records if r.levelname == "ERROR"]
+    assert len(error_records) == 1
+    assert service.market_data_status == "disconnected"

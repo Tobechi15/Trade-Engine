@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.brokers.base import BrokerInterface
 from app.core.event_bus import EventBus
 from app.core.events import EventType
+from app.core.exceptions import ProviderAuthError
 from app.db.base import SessionLocal
 from app.services.market_data_service import MarketDataService
 from app.services.order_manager import OrderManager
@@ -17,6 +18,12 @@ from app.services.order_manager import OrderManager
 logger = logging.getLogger("recovery")
 
 BACKOFF_SCHEDULE_SECONDS = [1, 2, 5, 10, 30]
+# A rejected auth / "not entitled" response (e.g. a plan that doesn't
+# include WebSocket streaming) will never succeed on retry until a human
+# fixes the credentials or upgrades the plan - retrying every 30s forever
+# is pure log spam and pointless load, so this class of failure gets a
+# much longer, mostly-silent backoff instead of the normal schedule.
+NOT_ENTITLED_BACKOFF_SECONDS = 3600.0
 # If a stream ran at least this long before dropping, treat it as having
 # been genuinely connected (reset backoff to the fast end) rather than a
 # repeated hard failure (e.g. bad credentials/URL) that should keep
@@ -87,6 +94,7 @@ class RecoveryService:
         that authenticates then drops instantly every time still backs off
         properly instead of hammering the provider."""
         was_healthy = False
+        already_flagged_not_entitled = False
         while True:
             attempt = self._reconnect_attempts.get(component, 0)
             started_at = datetime.now(UTC)
@@ -98,6 +106,22 @@ class RecoveryService:
                 # a clean return is unusual but treat it as "reconnect now".
             except asyncio.CancelledError:
                 raise
+            except ProviderAuthError as exc:
+                self._set_status(component, "disconnected")
+                was_healthy = False
+                if not already_flagged_not_entitled:
+                    logger.error("%s not available: %s", component, exc)
+                    await self._bus.publish(
+                        EventType.RECOVERY_FAILED,
+                        source="recovery",
+                        payload={"component": component, "reason": "not_entitled", "message": str(exc)},
+                    )
+                    self._record(component, "not_entitled", 0.0, failure_type="critical")
+                    already_flagged_not_entitled = True
+                else:
+                    logger.info("%s still not entitled, retrying in %.0fs: %s", component, NOT_ENTITLED_BACKOFF_SECONDS, exc)
+                await asyncio.sleep(NOT_ENTITLED_BACKOFF_SECONDS)
+                continue
             except Exception:
                 ran_for = (datetime.now(UTC) - started_at).total_seconds()
                 self._set_status(component, "disconnected")
@@ -108,6 +132,7 @@ class RecoveryService:
                         EventType.RECOVERY_STARTED, source="recovery", payload={"component": component}
                     )
                 was_healthy = False
+                already_flagged_not_entitled = False
 
                 if ran_for >= STABLE_CONNECTION_SECONDS:
                     attempt = 0
@@ -120,6 +145,7 @@ class RecoveryService:
 
             # Reached only on a clean (non-exception) return from run_stream.
             self._reconnect_attempts[component] = 0
+            already_flagged_not_entitled = False
 
     def _set_status(self, component: str, status: str) -> None:
         previous = self.broker_status if component == "broker" else self.market_data_status
