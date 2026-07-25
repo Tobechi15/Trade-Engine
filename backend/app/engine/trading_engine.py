@@ -124,8 +124,23 @@ class TradingEngine:
         await self.event_bus.start()
         await self.risk_engine.load_settings()
 
-        await self.broker.connect()
-        await self.market_data_service.connect()
+        # Broker/market-data connectivity is intentionally non-fatal here:
+        # a missing/bad API key (or a provider outage) should degrade the
+        # engine, not prevent it from starting at all. RecoveryService
+        # (started below) retries both forever with backoff, and
+        # /api/v1/health reports the real per-component status - see
+        # RECOVERY.md's "trading stays paused until synchronized", not
+        # "the whole engine refuses to boot".
+        try:
+            await self.broker.connect()
+        except Exception:
+            logger.exception("broker connection failed at startup - will keep retrying in the background")
+
+        try:
+            await self.market_data_service.connect()
+        except Exception:
+            logger.exception("market data connection failed at startup - will keep retrying in the background")
+
         try:
             self.market_state.tradeable_symbols = await self.broker.get_tradeable_symbols()
         except Exception:
