@@ -194,10 +194,21 @@ class AlpacaMarketData(MarketDataInterface):
         new_set, old_set = set(symbols), set(self._subscribed_symbols)
         to_add = sorted(new_set - old_set)
         to_remove = sorted(old_set - new_set)
-        if to_remove:
-            await self._ws.send(json.dumps({"action": "unsubscribe", "quotes": to_remove, "bars": to_remove}))
-        if to_add:
-            await self._ws.send(json.dumps({"action": "subscribe", "quotes": to_add, "bars": to_add}))
+        try:
+            if to_remove:
+                await self._ws.send(json.dumps({"action": "unsubscribe", "quotes": to_remove, "bars": to_remove}))
+            if to_add:
+                await self._ws.send(json.dumps({"action": "subscribe", "quotes": to_add, "bars": to_add}))
+        except (websockets.ConnectionClosed, OSError):
+            # The connection died between the caller's "is a stream
+            # running" check and this send - the stream() task's own
+            # `finally` will clear self._ws and RecoveryService will
+            # restart it. A strategy calling this must never crash (and
+            # get permanently disabled by StrategyManager) over a
+            # subscription update racing a drop it doesn't control.
+            logger.warning("update_subscriptions: connection dropped mid-send, will resubscribe on reconnect")
+            self._subscribed_symbols = symbols
+            return
         self._subscribed_symbols = symbols
 
     async def stream(self, symbols: list[str], on_bar: BarCallback, on_quote: QuoteCallback) -> None:
@@ -288,5 +299,19 @@ class AlpacaMarketData(MarketDataInterface):
         except (websockets.ConnectionClosed, OSError) as exc:
             logger.warning("alpaca market data stream disconnected: %s", exc)
             self._connected = False
-            self._ws = None
             raise
+        finally:
+            # Cleared unconditionally, not just on ConnectionClosed/OSError:
+            # any exit from this method (including ProviderAuthError/
+            # RuntimeError raised above from an auth/subscription
+            # rejection) must not leave `self._ws` pointing at a dead
+            # socket. update_subscriptions() only checks "is self._ws
+            # None" to decide whether a stream is live - a stale handle
+            # there causes it to call .send() on a closed connection,
+            # which raises synchronously out of start_streaming() and
+            # gets caught by StrategyManager._guarded() as a hard
+            # failure, permanently disabling whichever strategy happened
+            # to call start_streaming() next (confirmed in production:
+            # this is what disabled vwap_reversion/gap_fill/
+            # breadth_pullback after a 406 "connection limit exceeded").
+            self._ws = None
