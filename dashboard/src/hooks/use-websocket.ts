@@ -5,7 +5,26 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { useAuthStore } from "@/lib/auth-store";
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000/ws";
+function resolveWsUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_WS_URL;
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+  // Default: derive from the API URL (http->ws, https->wss) so there's a
+  // single source of truth instead of two URLs that can drift out of sync.
+  let url = explicit || apiUrl.replace(/^http/, "ws").replace(/\/$/, "") + "/ws";
+
+  // Defensive: a page served over HTTPS can never open a plain ws://
+  // connection - browsers block it as "mixed content" and silently refuse
+  // to connect. If NEXT_PUBLIC_WS_URL was set to ws:// by mistake (e.g. a
+  // Vercel env var copied from local dev), upgrade it rather than fail.
+  if (typeof window !== "undefined" && window.location.protocol === "https:" && url.startsWith("ws://")) {
+    url = url.replace(/^ws:\/\//, "wss://");
+  }
+
+  return url;
+}
+
+const WS_URL = resolveWsUrl();
 
 // Real-time updates arrive over one WebSocket connection; rather than
 // patching every cache shape by hand, each event type just invalidates the
