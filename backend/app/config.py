@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://user:password@localhost/trade_engine"
 
-    # Bybit: execution only (market data comes from Massive - see below).
+    # Bybit: execution only (market data comes from Alpaca - see below).
     bybit_api_key: str = ""
     bybit_api_secret: str = ""
     bybit_env: str = "demo"
@@ -27,10 +27,15 @@ class Settings(BaseSettings):
     bybit_ws_url: str = "wss://stream-demo.bybit.com/v5/private"
     bybit_recv_window: int = 5000
 
-    # Massive (formerly Polygon.io): market data only.
-    massive_api_key: str = ""
-    massive_base_url: str = "https://api.massive.com"
-    massive_ws_url: str = "wss://socket.massive.com/stocks"
+    # Alpaca: market data only.
+    alpaca_api_key: str = ""
+    alpaca_api_secret: str = ""
+    alpaca_data_base_url: str = "https://data.alpaca.markets"
+    alpaca_stream_base_url: str = "wss://stream.data.alpaca.markets/v2"
+    # "iex" = free/Basic plan (real-time, IEX exchange only). "sip" = full
+    # consolidated tape, requires the paid Algo Trader Plus plan - using it
+    # on a Basic key gets rejected as a ProviderAuthError.
+    alpaca_feed: str = "iex"
 
     risk_per_trade_pct: float = 1.25
     daily_loss_limit_pct: float = 4.0

@@ -12,7 +12,7 @@ orb:
   risk: 1.25
   reward_risk_ratio: 2.0
   maximum_trades: 10
-  # Real share volume now (market data is Massive, not Bybit perpetuals).
+  # Real share volume now (market data is Alpaca, not Bybit perpetuals).
   min_premarket_volume: 200000
 
 noise:

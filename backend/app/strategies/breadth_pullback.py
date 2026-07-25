@@ -20,7 +20,7 @@ class BreadthVwapPullback(Strategy):
     the symbol's own position relative to its VWAP.
 
     NYSE $ADD (advance-decline breadth) availability from the market data
-    provider is unconfirmed (see app/market_data/massive.py). If it's
+    provider is unconfirmed (see app/market_data/alpaca.py). If it's
     unavailable, get_index_value() returns None and this strategy sits out
     entirely rather than trading without the breadth filter - "no data"
     must never be treated as "condition satisfied"."""

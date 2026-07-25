@@ -75,7 +75,7 @@ class OpeningRangeBreakout(Strategy):
             candidates = self._candidate_symbols
         else:
             candidates = await self._market_data.get_active_symbols(self._candidate_pool_size)
-            # Market data (Massive) covers far more symbols than the
+            # Market data (Alpaca) covers far more symbols than the
             # execution broker (Bybit) can actually trade - never scan a
             # symbol we can't place an order for.
             tradeable = self._state.tradeable_symbols

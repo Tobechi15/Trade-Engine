@@ -87,8 +87,8 @@ async def test_backoff_resets_after_a_stable_connection(event_bus, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_provider_auth_error_backs_off_for_an_hour_and_logs_once(event_bus, monkeypatch, caplog):
-    """Regression test: a plan/credential rejection (e.g. Massive's free
-    tier not including WebSocket streaming, or no Bybit keys configured)
+    """Regression test: a plan/credential rejection (e.g. Alpaca's free
+    tier not being entitled to the "sip" feed, or no Bybit keys configured)
     must not retry every 30s forever - it should wait the long
     not-entitled backoff and only log/notify once, not on every retry."""
     sleeps: list[float] = []

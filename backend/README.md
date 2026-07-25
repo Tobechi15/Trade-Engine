@@ -16,22 +16,23 @@ Required values in `.env` before the engine can actually trade:
 
 - `DATABASE_URL` - your Neon Postgres connection string (`postgresql+asyncpg://...`). Paste Neon's copy-pasted string as-is (`?sslmode=require&channel_binding=require` included) - `app/db/base.py` sanitizes it for asyncpg automatically.
 - `BYBIT_API_KEY` / `BYBIT_API_SECRET` - **execution only**. Bybit TradFi (tokenized US stocks/ETFs) trades as USDT-settled linear perpetuals on the standard V5 API (`category=linear`, symbols like `SPYUSDT`) - confirmed against Bybit's TradFi announcements and API docs.
-- `MASSIVE_API_KEY` - **market data only**. [Massive](https://massive.com) is the rebrand of Polygon.io (as of 2025-10-30); existing Polygon API shape/auth/SDKs still work. Used for historical bars, live streaming (minute aggregates + quotes), the dynamic scan universe, and index data (VIX, NYSE breadth).
+- `ALPACA_API_KEY` / `ALPACA_API_SECRET` - **market data only**. [Alpaca](https://alpaca.markets) is used for historical bars, live streaming (bars + quotes), the dynamic scan universe (most-actives screener), and index data (VIX, NYSE breadth - see below).
 - `JWT_SECRET`, `OPERATOR_USERNAME`, `OPERATOR_PASSWORD` - dashboard login.
 
-**Two different providers, two different symbol universes**: Massive covers the whole US equities market; Bybit TradFi currently lists ~300 stocks/ETFs/forex/commodities. `BrokerInterface.get_tradeable_symbols()` (fetched once at startup into `MarketState.tradeable_symbols`) is used to filter ORB's dynamically-discovered scan universe down to what Bybit can actually execute - see `app/strategies/orb.py: build_universe()`.
+**Two different providers, two different symbol universes**: Alpaca covers the whole US equities market; Bybit TradFi currently lists ~300 stocks/ETFs/forex/commodities. `BrokerInterface.get_tradeable_symbols()` (fetched once at startup into `MarketState.tradeable_symbols`) is used to filter ORB's dynamically-discovered scan universe down to what Bybit can actually execute - see `app/strategies/orb.py: build_universe()`.
 
-**Things I could not verify against a live response** (this environment's outbound requests to both `api.bybit.com` and `massive.com`/`polygon.io` were geo-blocked/CloudFront-blocked, so these are the best-documented values, not tested):
+**Things I could not verify against a live response** (this environment's outbound requests to both `api.bybit.com` and `alpaca.markets` were geo-blocked, so these are the best-documented values from Alpaca's docs, not a live-tested response):
 - Bybit's `symbolType` field on `/v5/market/instruments-info` (used to filter stocks/ETFs out of the crypto-perp-heavy `linear` category) - see `app/brokers/bybit_tradfi.py: TRADFI_SYMBOL_TYPES`.
-- Massive's WebSocket host (`wss://socket.massive.com/stocks`, inferred from the `api.polygon.io` → `api.massive.com` rename pattern) - see `app/market_data/massive.py`.
-- Whether Massive carries NYSE $ADD (advance-decline breadth) at all - `get_index_value("ADD")` returns `None` if not, and the `breadth_pullback` strategy sits out entirely rather than trading without the filter (never fabricates a value).
+- The most-actives screener response shape (`most_actives` key) - see `app/market_data/alpaca.py: get_active_symbols()`.
+- The exact WebSocket error codes for entitlement rejection (Alpaca's docs list `409` as "insufficient subscription" - the plan/feed mismatch case - which this adapter maps to `ProviderAuthError` along with `402`/`403`/`404`/`405`).
+- Whether Alpaca carries macro indices (VIX, NYSE $ADD breadth) at all via the stocks API - `get_index_value()` always returns `None`, and the `breadth_pullback` strategy sits out entirely rather than trading without the filter (never fabricates a value).
 
-Confirmed via direct doc/API fetches: Massive's REST base (`api.massive.com`), the `Authorization: Bearer` auth scheme, the aggregates/snapshot endpoint shapes, and indices ticker format (`I:VIX`, `I:SPX`, etc.) - and Bybit TradFi's ~300-instrument catalog, `category=linear`, `{TICKER}USDT` symbol format.
+Confirmed via direct doc fetches (`docs.alpaca.markets`): the REST base (`data.alpaca.markets`), `APCA-API-KEY-ID`/`APCA-API-SECRET-KEY` auth headers, the multi-symbol bars endpoint shape (`/v2/stocks/bars`, keyed by symbol, `next_page_token` pagination), and the WebSocket protocol (`wss://stream.data.alpaca.markets/v2/{feed}`, `auth`/`subscribe` action messages) - and Bybit TradFi's ~300-instrument catalog, `category=linear`, `{TICKER}USDT` symbol format.
 
-**Massive's free "Stocks Basic" tier is End-of-Day data only** (confirmed against pricing + live 403s in production): no WebSocket streaming, no full-market snapshot endpoint, 5 API calls/minute. There is no code fix for this - a plan/cost decision, not a bug. `Stocks Starter` ($29/mo) adds unlimited calls + WebSocket + snapshot with a 15-minute delay; `Stocks Advanced` ($199/mo) adds genuine real-time data. Until upgraded, the engine degrades gracefully rather than erroring:
-- `get_active_symbols()` falls back to the static `DEFAULT_CANDIDATES` list if the snapshot endpoint 403s.
-- `stream()`/`stream_fills()` raise `ProviderAuthError` (`app/core/exceptions.py`) on any auth/entitlement rejection - handshake-level or app-level, for both Massive and Bybit (including the deterministic case of simply not having Bybit keys configured, checked before any network call). `RecoveryService` backs this off for a full hour and logs/notifies only once per outage instead of retrying every 30s forever (that tight retry loop is what originally tripped Massive's rate limit).
-- None of this makes EOD-only data support live intraday trading - it just means the engine runs without spamming errors while you decide whether/when to upgrade.
+**Alpaca's free "Basic" plan has real plan limits** (confirmed via `docs.alpaca.markets/us/docs/about-market-data-api`): real-time data is IEX-only (not the full consolidated tape - that needs `sip`, which requires the paid Algo Trader Plus plan at $99/mo), WebSocket subscriptions are capped at 30 symbols, the most recent 15 minutes of historical bars are restricted, and the REST rate limit is 200 req/min (vs 10,000 req/min on Algo Trader Plus). `ALPACA_FEED` defaults to `iex` for exactly this reason - don't set it to `sip` on a Basic key. There is no code fix for this - a plan/cost decision, not a bug. Until upgraded, the engine degrades gracefully rather than erroring:
+- `get_active_symbols()` falls back to the static `DEFAULT_CANDIDATES` list if the screener endpoint 401s/403s.
+- `stream()`/`stream_fills()` raise `ProviderAuthError` (`app/core/exceptions.py`) on any auth/entitlement rejection - handshake-level or app-level, for both Alpaca and Bybit (including the deterministic case of simply not having Bybit keys configured, checked before any network call). `RecoveryService` backs this off for a full hour and logs/notifies only once per outage instead of retrying every 30s forever (that tight retry loop is what originally tripped a rate limit on the previous market data provider).
+- None of this makes IEX-only data equivalent to full-tape intraday trading - it just means the engine runs without spamming errors while you decide whether/when to upgrade.
 
 ## Database
 
@@ -57,7 +58,7 @@ pytest
 
 | Name | File | Universe | Timeframe |
 |---|---|---|---|
-| `orb` | `strategies/orb.py` | Dynamic (top active, Massive) | 1-minute |
+| `orb` | `strategies/orb.py` | Dynamic (top active, Alpaca) | 1-minute |
 | `noise` | `strategies/noise.py` | SPY, QQQ | 1-minute |
 | `bias` | `strategies/bias.py` | SPY, QQQ | 1-minute |
 | `vwap_reversion` | `strategies/vwap_reversion.py` | SPY, QQQ | 5-minute |
@@ -70,7 +71,7 @@ Configuration for all six lives in `app/data/strategies.yaml`.
 
 ### Shared indicators (`app/core/indicators.py`)
 
-`vwap_reversion`, `gap_fill`, and `breadth_pullback` all trade 5-minute candles built by resampling the engine's native 1-minute `NEW_CANDLE` stream (`BarResampler`, bucketed on session-open-aligned boundaries) rather than requiring a second live subscription - Massive's WebSocket only pushes 1-minute aggregates in real time; 5-minute history is fetched directly via REST where needed. Also here: `VWAPState` (session VWAP + volume-weighted std-dev bands) and Wilder's `adx()`/`atr()`.
+`vwap_reversion`, `gap_fill`, and `breadth_pullback` all trade 5-minute candles built by resampling the engine's native 1-minute `NEW_CANDLE` stream (`BarResampler`, bucketed on session-open-aligned boundaries) rather than requiring a second live subscription - Alpaca's WebSocket only pushes 1-minute bars in real time; 5-minute history is fetched directly via REST where needed. Also here: `VWAPState` (session VWAP + volume-weighted std-dev bands) and Wilder's `adx()`/`atr()`.
 
 ### Partial exits
 
@@ -78,7 +79,7 @@ Configuration for all six lives in `app/data/strategies.yaml`.
 
 ## Notable design decisions
 
-- **Scanner universe selection**: ranks a dynamically-fetched candidate pool (Massive's full market snapshot, by dollar volume) by premarket gap % and volume. There's no news/unusual-activity feed in the stack, so those filters from the spec are left as documented gaps rather than faked.
+- **Scanner universe selection**: ranks a dynamically-fetched candidate pool (Alpaca's most-actives screener, by volume) by premarket gap % and volume. There's no news/unusual-activity feed in the stack, so those filters from the spec are left as documented gaps rather than faked.
 - **Risk Engine allocation model**: strategy allocation % and portfolio exposure % are both measured against position *notional* (qty × price) versus equity - a concrete, implementable reading of the spec's "ensure strategy has remaining capital."
 - **Exits bypass the Risk Engine**: entries are risk-gated (`SIGNAL_GENERATED` → `RISK_APPROVED`); closes (stop/target brackets, time-based, partial, manual, emergency) go straight to the Order Manager since reducing a position never increases risk.
 - **`TRADE_ENTERED`/`TRADE_EXITED`**: published by each strategy (via the shared `Strategy` base class), which is what the event catalogue implies by grouping them under "Strategy Events" and by the strategy lifecycle ("Manage Position → Complete Trade → Performance Logging").

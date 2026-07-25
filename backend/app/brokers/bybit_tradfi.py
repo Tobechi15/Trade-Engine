@@ -59,8 +59,8 @@ class BybitTradFiBroker(BrokerInterface):
     # IMPORTANT: this environment's outbound requests to api.bybit.com were
     # geo-blocked, so the exact `symbolType` field values could not be
     # verified against a live response - confirm before relying on this in
-    # production (see app/market_data/massive.py for the same caveat noted
-    # against Massive's docs).
+    # production (see app/market_data/alpaca.py for the same caveat noted
+    # against Alpaca's docs).
     TRADFI_SYMBOL_TYPES = {"stock", "etf"}
 
     def __init__(self, settings: Settings) -> None:

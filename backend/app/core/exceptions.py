@@ -7,6 +7,6 @@ class ProviderAuthError(RuntimeError):
     will never succeed until a human fixes the credentials or upgrades the
     plan. RecoveryService backs off much longer for this class of error
     than for an ordinary dropped connection, and callers that have a
-    static fallback (e.g. MassiveMarketData.get_active_symbols) should use
+    static fallback (e.g. AlpacaMarketData.get_active_symbols) should use
     it instead of raising.
     """
