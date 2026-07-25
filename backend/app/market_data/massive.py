@@ -14,6 +14,13 @@ from app.market_data.base import Bar, BarCallback, MarketDataInterface, QuoteCal
 
 logger = logging.getLogger("market_data")
 
+
+class MassiveWSError(RuntimeError):
+    """Raised when Massive's WebSocket reports an auth/subscribe failure.
+    Deliberately not a subclass of ConnectionClosed/OSError so it isn't
+    silently reclassified as a generic disconnect - callers (RecoveryService)
+    still catch it via the general Exception handler and back off."""
+
 # Massive (formerly Polygon.io, rebranded 2025-10-30 - see
 # https://massive.com/blog/polygon-is-now-massive) is used for market data
 # only; Bybit remains execution-only. Confirmed against massive.com/docs
@@ -163,8 +170,13 @@ class MassiveMarketData(MarketDataInterface):
             async with websockets.connect(self._settings.massive_ws_url, ping_interval=20) as ws:
                 self._ws = ws
                 await ws.recv()  # "connected" status frame
+
                 await ws.send(json.dumps({"action": "auth", "params": self._settings.massive_api_key}))
-                await ws.recv()  # auth status frame
+                auth_response = json.loads(await ws.recv())
+                auth_status = (auth_response[0] if auth_response else {}).get("status")
+                if auth_status != "auth_success":
+                    raise MassiveWSError(f"authentication failed: {auth_response}")
+
                 await ws.send(json.dumps({"action": "subscribe", "params": args}))
 
                 async for raw in ws:

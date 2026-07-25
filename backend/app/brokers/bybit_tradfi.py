@@ -266,7 +266,19 @@ class BybitTradFiBroker(BrokerInterface):
         try:
             async with websockets.connect(self._settings.bybit_ws_url, ping_interval=None) as ws:
                 await ws.send(json.dumps(auth_payload))
+                auth_response = json.loads(await ws.recv())
+                if not auth_response.get("success", False):
+                    raise BybitAPIError(
+                        auth_response.get("ret_code", -1), auth_response.get("ret_msg", "authentication failed")
+                    )
+
                 await ws.send(json.dumps({"op": "subscribe", "args": ["order"]}))
+                subscribe_response = json.loads(await ws.recv())
+                if not subscribe_response.get("success", False):
+                    raise BybitAPIError(
+                        subscribe_response.get("ret_code", -1), subscribe_response.get("ret_msg", "subscribe failed")
+                    )
+
                 ping_task = asyncio.create_task(self._keep_alive(ws))
                 async for raw in ws:
                     message = json.loads(raw)
