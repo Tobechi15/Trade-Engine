@@ -10,7 +10,7 @@ from app.schemas.common import ok
 router = APIRouter(prefix="/api/v1/health", tags=["health"])
 
 
-@router.get("")
+@router.api_route("", methods=["GET", "HEAD"])
 async def health(engine: TradingEngine = Depends(get_engine)):
     return ok(
         {
