@@ -61,7 +61,18 @@ class PositionManager:
                 }
                 self._state.upsert_position(symbol, position)
                 await self._bus.publish(EventType.POSITION_OPENED, source="position_manager", payload=position)
-        else:  # exit
+        elif intent == "partial_exit":
+            position = self._state.active_positions.get(symbol)
+            if position is None:
+                return
+            position["quantity"] = max(0.0, position["quantity"] - quantity)
+            self._state.upsert_position(symbol, position)
+            await self._bus.publish(
+                EventType.POSITION_UPDATED,
+                source="position_manager",
+                payload={**position, "partial_exit_price": price, "partial_exit_quantity": quantity},
+            )
+        else:  # full exit
             position = self._state.active_positions.get(symbol)
             if position is None:
                 return

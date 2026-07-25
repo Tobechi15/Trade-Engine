@@ -51,6 +51,16 @@ class BybitTradFiBroker(BrokerInterface):
     OPEN_ORDERS_PATH = "/v5/order/realtime"
     POSITIONS_PATH = "/v5/position/list"
     WALLET_BALANCE_PATH = "/v5/account/wallet-balance"
+    INSTRUMENTS_PATH = "/v5/market/instruments-info"
+
+    # Filters instruments-info down to stocks/ETFs (excludes crypto perps,
+    # forex, metals, commodities also listed under category="linear").
+    # IMPORTANT: this environment's outbound requests to api.bybit.com were
+    # geo-blocked, so the exact `symbolType` field values could not be
+    # verified against a live response - confirm before relying on this in
+    # production (see app/market_data/massive.py for the same caveat noted
+    # against Massive's docs).
+    TRADFI_SYMBOL_TYPES = {"stock", "etf"}
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
@@ -186,6 +196,23 @@ class BybitTradFiBroker(BrokerInterface):
                 )
             )
         return orders
+
+    async def get_tradeable_symbols(self) -> set[str]:
+        symbols: set[str] = set()
+        cursor = ""
+        while True:
+            params: dict = {"category": self.CATEGORY, "status": "Trading", "limit": 1000}
+            if cursor:
+                params["cursor"] = cursor
+            result = await self._request("GET", self.INSTRUMENTS_PATH, params=params)
+            for item in result.get("list", []):
+                symbol_type = str(item.get("symbolType", "")).strip().lower()
+                if symbol_type in self.TRADFI_SYMBOL_TYPES:
+                    symbols.add(from_bybit_symbol(item["symbol"]))
+            cursor = result.get("nextPageCursor") or ""
+            if not cursor:
+                break
+        return symbols
 
     async def get_positions(self) -> list[BrokerPosition]:
         result = await self._request("GET", self.POSITIONS_PATH, params={"category": self.CATEGORY})

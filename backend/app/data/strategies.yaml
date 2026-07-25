@@ -12,9 +12,8 @@ orb:
   risk: 1.25
   reward_risk_ratio: 2.0
   maximum_trades: 10
-  # Placeholder - Bybit TradFi perpetual volume is contract count, not
-  # underlying share volume; tune once you've observed real volume.
-  min_premarket_volume: 1000
+  # Real share volume now (market data is Massive, not Bybit perpetuals).
+  min_premarket_volume: 200000
 
 noise:
   enabled: true
@@ -34,3 +33,42 @@ bias:
   stop_pct: 0.5
   risk: 1.5
   maximum_trades: 2
+
+vwap_reversion:
+  enabled: true
+  universe: ["SPY", "QQQ"]
+  num_std: 2.0
+  adx_period: 14
+  adx_threshold: 25.0
+  atr_period: 14
+  atr_stop_multiplier: 1.0
+  entry_start: "10:00"
+  entry_end: "15:00"
+  time_exit: "15:45"
+  risk: 1.0
+  maximum_trades: 6
+
+gap_fill:
+  enabled: true
+  universe: ["SPY", "QQQ"]
+  min_gap_pct: 0.0015
+  max_gap_pct: 0.0060
+  vix_threshold: 25.0
+  atr_period: 14
+  partial_fill_fraction: 0.75
+  hard_time_stop: "11:30"
+  risk: 1.0
+  maximum_trades: 2
+
+breadth_pullback:
+  enabled: true
+  universe: ["SPY", "QQQ"]
+  breadth_threshold: 1000.0
+  atr_period: 14
+  atr_multiplier: 1.2
+  reward_risk_ratio: 2.0
+  entry_start: "10:00"
+  entry_end: "14:30"
+  time_exit: "15:45"
+  risk: 1.25
+  maximum_trades: 4

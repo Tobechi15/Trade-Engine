@@ -19,15 +19,18 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://user:password@localhost/trade_engine"
 
+    # Bybit: execution only (market data comes from Massive - see below).
     bybit_api_key: str = ""
     bybit_api_secret: str = ""
     bybit_env: str = "demo"
     bybit_base_url: str = "https://api-demo.bybit.com"
     bybit_ws_url: str = "wss://stream-demo.bybit.com/v5/private"
-    # Public market data (klines/tickers) is the same feed on demo or live
-    # accounts, so it always points at the mainnet public stream.
-    bybit_public_ws_url: str = "wss://stream.bybit.com/v5/public/linear"
     bybit_recv_window: int = 5000
+
+    # Massive (formerly Polygon.io): market data only.
+    massive_api_key: str = ""
+    massive_base_url: str = "https://api.massive.com"
+    massive_ws_url: str = "wss://socket.massive.com/stocks"
 
     risk_per_trade_pct: float = 1.25
     daily_loss_limit_pct: float = 4.0

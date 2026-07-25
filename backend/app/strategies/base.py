@@ -98,16 +98,40 @@ class Strategy(ABC):
     async def close_position(self, symbol: str, *, reason: str) -> None:
         await self._order_manager.close_position(symbol, reason=reason)
 
+    async def partial_close_position(self, symbol: str, *, fraction: float, reason: str) -> None:
+        """Closes part of the position (e.g. a partial take-profit) while
+        keeping the trade context open - the eventual full close still
+        finalizes TRADE_EXITED, with this leg's PnL folded in."""
+        await self._order_manager.close_position(symbol, reason=reason, fraction=fraction)
+
     async def _on_order_filled(self, event: Event) -> None:
         payload = event.payload
-        if payload.get("strategy") != self.name or payload.get("intent") != "entry":
+        if payload.get("strategy") != self.name:
             return
-        ctx = self._open_trades.get(payload["symbol"])
-        if ctx is None or "entry_time" in ctx:
-            return  # unknown symbol, or already processed (idempotency)
+        intent = payload.get("intent")
+        symbol = payload["symbol"]
+        ctx = self._open_trades.get(symbol)
+        if ctx is None:
+            return
+
+        if intent == "partial_exit":
+            if "entry_price" not in ctx:
+                return
+            exit_price = payload.get("avg_fill_price")
+            filled_qty = payload.get("filled_quantity") or 0
+            if exit_price is None or not filled_qty:
+                return
+            sign = 1 if ctx["direction"] == "long" else -1
+            ctx["realized_pnl"] = ctx.get("realized_pnl", 0.0) + sign * (exit_price - ctx["entry_price"]) * filled_qty
+            ctx["quantity"] = max(0.0, (ctx.get("quantity") or 0) - filled_qty)
+            return
+
+        if intent != "entry" or "entry_time" in ctx:
+            return  # unknown intent, or already processed (idempotency)
         ctx["entry_time"] = TimeService.now_utc()
         ctx["entry_price"] = payload.get("avg_fill_price")
         ctx["quantity"] = payload.get("filled_quantity")
+        ctx["original_quantity"] = ctx["quantity"]
         await self._bus.publish(
             EventType.TRADE_ENTERED,
             source=self.name,
@@ -134,11 +158,15 @@ class Strategy(ABC):
             return
         entry_price = ctx.get("entry_price")
         exit_price = payload.get("exit_price") or entry_price
-        quantity = ctx.get("quantity") or 0
+        remaining_quantity = ctx.get("quantity") or 0
+        original_quantity = ctx.get("original_quantity", remaining_quantity)
         direction = ctx.get("direction")
         sign = 1 if direction == "long" else -1
-        pnl = sign * (exit_price - entry_price) * quantity if entry_price and exit_price else None
-        risk_amount = abs(entry_price - ctx["stop_price"]) * quantity if entry_price and ctx.get("stop_price") else None
+        final_leg_pnl = sign * (exit_price - entry_price) * remaining_quantity if entry_price and exit_price else 0.0
+        pnl = ctx.get("realized_pnl", 0.0) + final_leg_pnl
+        risk_amount = (
+            abs(entry_price - ctx["stop_price"]) * original_quantity if entry_price and ctx.get("stop_price") else None
+        )
         r_multiple = pnl / risk_amount if pnl is not None and risk_amount else None
         entry_time = ctx.get("entry_time")
         exit_time = TimeService.now_utc()
@@ -156,7 +184,7 @@ class Strategy(ABC):
                 "exit_time": exit_time.isoformat(),
                 "entry_price": entry_price,
                 "exit_price": exit_price,
-                "quantity": quantity,
+                "quantity": original_quantity,
                 "risk_amount": risk_amount,
                 "pnl": pnl,
                 "r_multiple": r_multiple,

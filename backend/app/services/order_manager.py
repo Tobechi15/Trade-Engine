@@ -51,15 +51,24 @@ class OrderManager:
         )
         await self._submit(request, strategy=strategy, direction=direction, intent="entry", signal=payload)
 
-    async def close_position(self, symbol: str, *, reason: str = "manual") -> BrokerOrder | None:
+    async def close_position(self, symbol: str, *, reason: str = "manual", fraction: float = 1.0) -> BrokerOrder | None:
+        """Closes `fraction` of the position (default: all of it). A
+        fraction < 1.0 is tagged intent="partial_exit" so the Position
+        Manager reduces the position instead of removing it, and the
+        strategy's own trade bookkeeping (Strategy._on_order_filled) keeps
+        the trade open rather than finalizing TRADE_EXITED."""
         position = self._state.active_positions.get(symbol)
         if position is None:
             return None
         direction = position["direction"]
         side = "sell" if direction == "long" else "buy"
-        request = OrderRequest(symbol=symbol, side=side, quantity=abs(position["quantity"]), order_type="market")
+        quantity = abs(position["quantity"]) * min(max(fraction, 0.0), 1.0)
+        if quantity <= 0:
+            return None
+        intent = "exit" if fraction >= 1.0 else "partial_exit"
+        request = OrderRequest(symbol=symbol, side=side, quantity=quantity, order_type="market")
         return await self._submit(
-            request, strategy=position.get("strategy", "unknown"), direction=direction, intent="exit", signal={"reason": reason}
+            request, strategy=position.get("strategy", "unknown"), direction=direction, intent=intent, signal={"reason": reason}
         )
 
     async def close_all(self, *, reason: str = "emergency") -> list[BrokerOrder]:

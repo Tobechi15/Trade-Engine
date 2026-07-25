@@ -15,7 +15,7 @@ from app.core.events import EventType
 from app.core.market_calendar import MarketCalendarService, market_calendar
 from app.core.market_state import MarketState
 from app.core.time_service import EXCHANGE_TZ, TimeService
-from app.market_data.bybit import BybitMarketData
+from app.market_data.massive import MassiveMarketData
 from app.services.analytics_service import AnalyticsService
 from app.services.logging_service import LoggingService, configure_logging
 from app.services.market_data_service import MarketDataService
@@ -28,8 +28,11 @@ from app.services.risk_engine import RiskEngine
 from app.services.state_recovery_service import StateRecoveryService
 from app.services.strategy_manager import StrategyManager
 from app.strategies.bias import FirstHourLastHour
+from app.strategies.breadth_pullback import BreadthVwapPullback
+from app.strategies.gap_fill import OpeningGapFill
 from app.strategies.noise import NoiseBoundaryBreakout
 from app.strategies.orb import OpeningRangeBreakout
+from app.strategies.vwap_reversion import VwapMeanReversion
 
 logger = logging.getLogger("system")
 
@@ -59,7 +62,7 @@ class TradingEngine:
         self.market_calendar: MarketCalendarService = market_calendar
 
         self.broker = BybitTradFiBroker(settings)
-        self.market_data_provider = BybitMarketData(settings)
+        self.market_data_provider = MassiveMarketData(settings)
         self.market_data_service = MarketDataService(self.event_bus, self.market_state, self.market_data_provider)
 
         self.order_manager = OrderManager(self.event_bus, self.market_state, self.broker)
@@ -83,6 +86,18 @@ class TradingEngine:
             "bias": FirstHourLastHour(
                 self.event_bus, self.market_state, self.market_calendar, self.order_manager,
                 strategy_config.get("bias", {}),
+            ),
+            "vwap_reversion": VwapMeanReversion(
+                self.event_bus, self.market_state, self.market_calendar, self.order_manager,
+                strategy_config.get("vwap_reversion", {}), market_data_service=self.market_data_service,
+            ),
+            "gap_fill": OpeningGapFill(
+                self.event_bus, self.market_state, self.market_calendar, self.order_manager,
+                strategy_config.get("gap_fill", {}), market_data_service=self.market_data_service,
+            ),
+            "breadth_pullback": BreadthVwapPullback(
+                self.event_bus, self.market_state, self.market_calendar, self.order_manager,
+                strategy_config.get("breadth_pullback", {}), market_data_service=self.market_data_service,
             ),
         }
         self.strategy_manager = StrategyManager(strategies)
@@ -111,6 +126,10 @@ class TradingEngine:
 
         await self.broker.connect()
         await self.market_data_service.connect()
+        try:
+            self.market_state.tradeable_symbols = await self.broker.get_tradeable_symbols()
+        except Exception:
+            logger.exception("failed to fetch tradeable symbols from broker - universe filtering disabled")
 
         self._setup_scheduler()
         self.scheduler.start()

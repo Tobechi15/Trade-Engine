@@ -22,7 +22,16 @@ class RiskSettings:
     max_strategy_allocation_pct: float = 50.0
     max_spread_pct: float = 0.15
     max_slippage_pct: float = 0.25
-    strategy_allocation: dict[str, float] = field(default_factory=lambda: {"orb": 50.0, "noise": 30.0, "bias": 20.0})
+    strategy_allocation: dict[str, float] = field(
+        default_factory=lambda: {
+            "orb": 30.0,
+            "noise": 15.0,
+            "bias": 10.0,
+            "vwap_reversion": 15.0,
+            "gap_fill": 15.0,
+            "breadth_pullback": 15.0,
+        }
+    )
     trading_enabled: bool = True
     disabled_strategies: set[str] = field(default_factory=set)
 

@@ -74,6 +74,11 @@ class MarketState:
         self.account_snapshot: AccountSnapshot = AccountSnapshot()
         self.universe: set[str] = set()
         self.qualified_symbols: set[str] = set()
+        # Symbols the execution broker can actually trade - populated once
+        # at startup (see TradingEngine.start()). Market-data and execution
+        # are different providers, so a strategy's dynamically-discovered
+        # scan universe must be filtered against this before trading it.
+        self.tradeable_symbols: set[str] = set()
 
     def reset_session(self) -> None:
         """Called at the start of each trading day."""

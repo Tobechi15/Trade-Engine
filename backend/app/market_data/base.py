@@ -71,6 +71,13 @@ class MarketDataInterface(ABC):
         scan candidate pool dynamically instead of a fixed list."""
         ...
 
+    async def get_index_value(self, index_symbol: str) -> float | None:
+        """Latest value for an index/breadth series (e.g. "VIX"). Not every
+        provider carries every index - the default is "unsupported",
+        signaled by None. Callers must treat None as missing data, never
+        substitute a guessed value."""
+        return None
+
     @property
     @abstractmethod
     def is_connected(self) -> bool: ...

@@ -34,6 +34,9 @@ class MarketDataService:
     async def get_active_symbols(self, limit: int) -> list[str]:
         return await self._provider.get_active_symbols(limit)
 
+    async def get_index_value(self, index_symbol: str) -> float | None:
+        return await self._provider.get_index_value(index_symbol)
+
     async def disconnect(self) -> None:
         if self._stream_task:
             self._stream_task.cancel()

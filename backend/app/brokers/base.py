@@ -84,6 +84,15 @@ class BrokerInterface(ABC):
     async def get_open_orders(self) -> list[BrokerOrder]: ...
 
     @abstractmethod
+    async def get_tradeable_symbols(self) -> set[str]:
+        """The full set of symbols this broker can actually execute orders
+        for. Needed because a strategy's scan universe may come from a
+        market-data provider with broader coverage than the execution
+        broker - the engine intersects the two before a strategy trades
+        anything it discovered dynamically."""
+        ...
+
+    @abstractmethod
     async def get_positions(self) -> list[BrokerPosition]: ...
 
     @abstractmethod

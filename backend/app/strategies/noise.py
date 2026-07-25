@@ -5,25 +5,13 @@ import statistics
 
 from app.core.event_bus import Event
 from app.core.events import EventType
+from app.core.indicators import atr as _atr
 from app.core.market_state import NoiseEnvelope
 from app.core.time_service import TimeService
-from app.market_data.base import Bar
 from app.services.market_data_service import MarketDataService
 from app.strategies.base import Strategy
 
 logger = logging.getLogger("strategy")
-
-
-def _true_range(prev_close: float, bar: Bar) -> float:
-    return max(bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close))
-
-
-def _atr(bars: list[Bar], period: int) -> float:
-    if len(bars) < 2:
-        return 0.0
-    trs = [_true_range(bars[i - 1].close, bars[i]) for i in range(1, len(bars))]
-    window = trs[-period:] if len(trs) >= period else trs
-    return sum(window) / len(window) if window else 0.0
 
 
 class NoiseBoundaryBreakout(Strategy):
