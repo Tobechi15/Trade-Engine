@@ -95,6 +95,19 @@ class Strategy(ABC):
             },
         )
 
+    async def reject_signal(self, *, symbol: str, direction: str, reason: str) -> None:
+        """Publishes a decision NOT to trade a setup that otherwise met
+        entry criteria, but was blocked by a strategy-level gate (daily
+        trade cap, symbol already has an open position). Routine non-setups
+        (indicator below threshold, no breakout this bar) are not signals
+        and should never call this - they happen every bar for every
+        symbol and would drown out the events worth an operator seeing."""
+        await self._bus.publish(
+            EventType.SIGNAL_REJECTED,
+            source=self.name,
+            payload={"strategy": self.name, "symbol": symbol, "direction": direction, "reason": reason},
+        )
+
     async def close_position(self, symbol: str, *, reason: str) -> None:
         await self._order_manager.close_position(symbol, reason=reason)
 

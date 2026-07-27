@@ -28,7 +28,7 @@ async def get_settings_endpoint(engine: TradingEngine = Depends(get_engine)):
     stored = row.value if row else {}
     return ok(
         {
-            "broker": {"environment": engine.settings.bybit_env, "paper_trading": engine.settings.bybit_env != "live"},
+            "broker": {"environment": engine.settings.bybit_env, "paper_trading": engine.settings.paper_trading},
             "market_data": {"provider": "bybit"},
             "strategies": engine.strategy_manager.status(),
             **stored,

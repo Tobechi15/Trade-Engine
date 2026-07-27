@@ -162,11 +162,6 @@ class OpeningRangeBreakout(Strategy):
         await self._evaluate_breakout(symbol, payload, exchange_time)
 
     async def _evaluate_breakout(self, symbol: str, payload: dict, exchange_time) -> None:
-        if self._trades_today >= self._max_trades:
-            return
-        if symbol in self._state.active_positions or symbol in self._open_trades:
-            return
-
         opening_range = self._state.opening_ranges[symbol]
         profile = self._state.volume_profiles.get(symbol)
         rvol = None
@@ -191,6 +186,13 @@ class OpeningRangeBreakout(Strategy):
         elif price < opening_range.low:
             direction, stop = "short", opening_range.high
         if direction is None:
+            return
+
+        if self._trades_today >= self._max_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="maximum_trades_reached")
+            return
+        if symbol in self._state.active_positions or symbol in self._open_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="position_already_open")
             return
 
         risk_distance = abs(price - stop)

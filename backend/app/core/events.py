@@ -64,9 +64,12 @@ class EventType(StrEnum):
 # transient / in-memory only.
 PERSISTED_EVENT_TYPES: frozenset[EventType] = frozenset(
     {
+        EventType.SIGNAL_GENERATED,
+        EventType.SIGNAL_REJECTED,
         EventType.TRADE_ENTERED,
         EventType.TRADE_EXITED,
         EventType.ORDER_FILLED,
+        EventType.RISK_REJECTED,
         EventType.DAILY_LOSS_HIT,
         EventType.RECOVERY_FAILED,
     }
@@ -100,7 +103,7 @@ EVENT_TO_CHANNELS: dict[EventType, tuple[str, ...]] = {
     EventType.OPENING_RANGE_READY: ("strategies", "scanner"),
     EventType.ORB_CUTOFF: ("strategies",),
     EventType.CLOSING_BIAS_START: ("strategies",),
-    EventType.SIGNAL_GENERATED: ("strategies", "scanner"),
+    EventType.SIGNAL_GENERATED: ("strategies", "scanner", "logs"),
     EventType.SIGNAL_REJECTED: ("strategies", "logs"),
     EventType.TRADE_ENTERED: ("portfolio", "analytics"),
     EventType.TRADE_EXITED: ("portfolio", "analytics", "logs"),

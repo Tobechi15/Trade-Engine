@@ -116,8 +116,6 @@ class OpeningGapFill(Strategy):
         await self._evaluate_entry(symbol, completed)
 
     async def _evaluate_entry(self, symbol: str, first_bar) -> None:
-        if self._trades_today >= self._max_trades:
-            return
         prior_close = self._prior_close.get(symbol)
         if not prior_close:
             return
@@ -144,7 +142,12 @@ class OpeningGapFill(Strategy):
             direction = "short"  # gap up, fading back down toward prior close
         if direction is None:
             return
+
+        if self._trades_today >= self._max_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="maximum_trades_reached")
+            return
         if symbol in self._state.active_positions or symbol in self._open_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="position_already_open")
             return
 
         entry_price = first_bar.close

@@ -23,10 +23,17 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
             "message": record.getMessage(),
         }
+        skip = set(logging.LogRecord("", 0, "", 0, "", (), None).__dict__) - {"exc_info", "stack_info"}
         for key, value in record.__dict__.items():
-            if key in payload or key in logging.LogRecord("", 0, "", 0, "", (), None).__dict__:
+            if key in payload or key in skip:
                 continue
             payload[key] = value
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        if record.stack_info:
+            payload["stack"] = self.formatStack(record.stack_info)
+        payload.pop("exc_info", None)
+        payload.pop("stack_info", None)
         return json.dumps(payload, default=str)
 
 
@@ -94,8 +101,10 @@ def _category_for(event_type: EventType) -> str:
         return "performance"
     if event_type == EventType.ORDER_FILLED:
         return "orders"
-    if event_type == EventType.DAILY_LOSS_HIT:
+    if event_type in (EventType.RISK_REJECTED, EventType.DAILY_LOSS_HIT):
         return "risk"
+    if event_type in (EventType.SIGNAL_GENERATED, EventType.SIGNAL_REJECTED):
+        return "strategy"
     if event_type == EventType.RECOVERY_FAILED:
         return "recovery"
     return "system"

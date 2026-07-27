@@ -26,6 +26,13 @@ class Settings(BaseSettings):
     bybit_base_url: str = "https://api-demo.bybit.com"
     bybit_ws_url: str = "wss://stream-demo.bybit.com/v5/private"
     bybit_recv_window: int = 5000
+    # When true, orders are simulated locally (never sent to Bybit) using a
+    # virtual balance - lets a mainnet API key be used for read-only calls
+    # (e.g. tradeable symbols) without ever risking real capital. Demo
+    # trading (BYBIT_ENV=demo) requires demo-specific API keys, so this is
+    # the option for running against mainnet with a mainnet-only key.
+    paper_trading: bool = False
+    paper_starting_equity: float = 100_000.0
 
     # Alpaca: market data only.
     alpaca_api_key: str = ""

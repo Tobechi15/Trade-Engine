@@ -134,10 +134,6 @@ class BreadthVwapPullback(Strategy):
     async def _evaluate_entry(self, symbol: str, bar: Bar, exchange_time) -> None:
         if not (self._entry_start <= exchange_time.time() <= self._entry_end):
             return
-        if self._trades_today >= self._max_trades:
-            return
-        if symbol in self._state.active_positions or symbol in self._open_trades:
-            return
 
         vwap_state = self._vwap[symbol]
         vwap = vwap_state.vwap
@@ -150,6 +146,13 @@ class BreadthVwapPullback(Strategy):
         elif bar.close < vwap and bar.high >= vwap and self._sector_alignment(bullish=False):
             direction = "short"
         if direction is None:
+            return
+
+        if self._trades_today >= self._max_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="maximum_trades_reached")
+            return
+        if symbol in self._state.active_positions or symbol in self._open_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="position_already_open")
             return
 
         bars = self._bars5m.get(symbol, [])

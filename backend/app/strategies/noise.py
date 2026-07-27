@@ -86,15 +86,19 @@ class NoiseBoundaryBreakout(Strategy):
                 await self.close_position(symbol, reason="return_to_envelope")
             return
 
-        if self._trades_today >= self._max_trades or symbol in self._open_trades:
-            return
-
         direction: str | None = None
         if price > envelope.upper:
             direction = "long"
         elif price < envelope.lower:
             direction = "short"
         if direction is None:
+            return
+
+        if self._trades_today >= self._max_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="maximum_trades_reached")
+            return
+        if symbol in self._open_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="position_already_open")
             return
 
         atr = self._state.atr.get(symbol, envelope.atr) or (price * 0.005)

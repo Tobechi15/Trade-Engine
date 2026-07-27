@@ -43,7 +43,7 @@ alembic upgrade head
 ## Run
 
 ```bash
-uvicorn app.main:app --reload
+uvicorn app.main:app --reload --no-access-log
 ```
 
 The API serves on `http://localhost:8000`. Docs at `/docs`. The trading engine boots automatically on app startup (see `app/main.py` lifespan) - if the broker/DB aren't reachable yet, the API still serves and `/api/v1/health` reports what's down.

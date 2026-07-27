@@ -113,10 +113,6 @@ class VwapMeanReversion(Strategy):
     async def _evaluate_entry(self, symbol: str, prev_bar: Bar, exchange_time) -> None:
         if not (self._entry_start <= exchange_time.time() <= self._entry_end):
             return
-        if self._trades_today >= self._max_trades:
-            return
-        if symbol in self._state.active_positions or symbol in self._open_trades:
-            return
 
         bars = self._bars5m.get(symbol, [])
         adx_value = compute_adx(bars, self._adx_period)
@@ -132,6 +128,13 @@ class VwapMeanReversion(Strategy):
         elif prev_bar.high >= upper and prev_bar.close < upper:
             direction = "short"
         if direction is None:
+            return
+
+        if self._trades_today >= self._max_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="maximum_trades_reached")
+            return
+        if symbol in self._state.active_positions or symbol in self._open_trades:
+            await self.reject_signal(symbol=symbol, direction=direction, reason="position_already_open")
             return
 
         entry_price = prev_bar.close

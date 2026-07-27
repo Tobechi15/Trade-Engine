@@ -9,6 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.brokers.bybit_tradfi import BybitTradFiBroker
+from app.brokers.paper import PaperTradingBroker
 from app.config import Settings
 from app.core.event_bus import EventBus
 from app.core.events import EventType
@@ -61,7 +62,8 @@ class TradingEngine:
         self.market_state = MarketState()
         self.market_calendar: MarketCalendarService = market_calendar
 
-        self.broker = BybitTradFiBroker(settings)
+        live_broker = BybitTradFiBroker(settings)
+        self.broker = PaperTradingBroker(settings, self.market_state, live_broker) if settings.paper_trading else live_broker
         self.market_data_provider = AlpacaMarketData(settings)
         self.market_data_service = MarketDataService(self.event_bus, self.market_state, self.market_data_provider)
 

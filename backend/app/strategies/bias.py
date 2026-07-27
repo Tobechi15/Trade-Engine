@@ -89,15 +89,21 @@ class FirstHourLastHour(Strategy):
             return
         self._bias_locked_in = True
         for symbol in self._universe:
-            if self._trades_today >= self._max_trades:
-                break
             bias = self._state.daily_bias.get(symbol, "neutral")
-            if bias == "neutral" or symbol in self._state.active_positions:
+            if bias == "neutral":
                 continue
             quote = self._state.live_quotes.get(symbol)
             if quote is None:
                 continue
             direction = "long" if bias == "bullish" else "short"
+
+            if self._trades_today >= self._max_trades:
+                await self.reject_signal(symbol=symbol, direction=direction, reason="maximum_trades_reached")
+                continue
+            if symbol in self._state.active_positions:
+                await self.reject_signal(symbol=symbol, direction=direction, reason="position_already_open")
+                continue
+
             entry_price = quote.price
             stop_price = (
                 entry_price * (1 - self._stop_pct / 100)
