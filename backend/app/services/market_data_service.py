@@ -74,9 +74,15 @@ class MarketDataService:
         return profile
 
     async def start_streaming(self, symbols: list[str]) -> None:
-        self._subscribed_symbols = symbols
+        # Merged, never replaced: each strategy calls this independently
+        # with only its own symbols, and update_subscriptions() unsubscribes
+        # anything not in the list it's given - replacing the tracked set
+        # here would drop every previously-subscribed symbol from every
+        # other strategy each time a new one starts streaming.
+        merged = sorted(set(self._subscribed_symbols) | set(symbols))
+        self._subscribed_symbols = merged
         if self._stream_task and not self._stream_task.done():
-            await self._provider.update_subscriptions(symbols)
+            await self._provider.update_subscriptions(merged)
             return
         self._stream_task = asyncio.create_task(self._run_stream(), name="market-data-stream")
 
